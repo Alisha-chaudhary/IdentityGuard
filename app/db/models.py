@@ -3,12 +3,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    DDL,
     Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     String,
     UniqueConstraint,
+    event,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -210,4 +213,46 @@ class RolePermission(Base):
 
     permission: Mapped[Permission] = relationship(
         back_populates="role_permissions"
+    )
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint(
+            "result IN ('SUCCESS', 'DENIED', 'FAILURE')",
+            name="ck_audit_result",
+        ),
+        Index("ix_audit_correlation", "correlation_id"),
+        Index("ix_audit_event_type", "event_type"),
+        {"sqlite_autoincrement": True},  # ids are never reused
+    )
+
+    id: Mapped[int] = mapped_column(
+        primary_key=True,
+        autoincrement=True,
+    )
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime
+    )  # naive UTC
+    actor: Mapped[str] = mapped_column(String(100))
+    event_type: Mapped[str] = mapped_column(String(50))
+    target: Mapped[str] = mapped_column(String(200))
+    action: Mapped[str] = mapped_column(String(100))
+    result: Mapped[str] = mapped_column(String(10))
+    reason: Mapped[str] = mapped_column(String(500), default="")
+    correlation_id: Mapped[str] = mapped_column(String(64))
+    prev_hash: Mapped[str] = mapped_column(String(64))
+    event_hash: Mapped[str] = mapped_column(String(64))
+
+
+# Append-only enforcement: the database itself refuses edits and deletes.
+for _name, _op in (("update", "UPDATE"), ("delete", "DELETE")):
+    event.listen(
+        AuditEvent.__table__,
+        "after_create",
+        DDL(
+            f"CREATE TRIGGER IF NOT EXISTS audit_events_no_{_name} "
+            f"BEFORE {_op} ON audit_events "
+            "BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END"
+        ).execute_if(dialect="sqlite"),
     )
