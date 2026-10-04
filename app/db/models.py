@@ -35,7 +35,7 @@ class User(Base):
     __tablename__ = "users"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('ACTIVE', 'DISABLED', 'TERMINATED')",
+            "status IN ('ACTIVE', 'DISABLED', 'LOCKED', 'TERMINATED')",
             name="ck_users_status",
         ),
     )
@@ -54,6 +54,15 @@ class User(Base):
     status: Mapped[str] = mapped_column(
         String(20),
         default="ACTIVE",
+    )
+
+    failed_attempts: Mapped[int] = mapped_column(
+        default=0,
+    )
+
+    locked_until: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        default=None,
     )
 
     department_id: Mapped[int] = mapped_column(

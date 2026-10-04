@@ -1,6 +1,10 @@
+import os
+import secrets
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.security import check_password_strength, hash_password
 from app.db.init_db import init_db
 from app.db.models import (
     Department,
@@ -151,12 +155,59 @@ USERS = [
 ]
 
 
-def seed(db: Session) -> None:
-    """Idempotent: does nothing if data already exists."""
+def _get_seed_password() -> tuple[str, bool]:
+    """
+    Get the development seed password.
 
-    if db.scalar(select(func.count()).select_from(Department)):
+    Prefer IDENTITYGUARD_SEED_PASSWORD from the environment.
+    Otherwise generate a one-time development password.
+    """
+    password = os.environ.get("IDENTITYGUARD_SEED_PASSWORD")
+
+    if password:
+        check_password_strength(password)
+        return password, False
+
+    password = secrets.token_urlsafe(12) + "A1!"
+    check_password_strength(password)
+    return password, True
+
+
+def seed(db: Session) -> None:
+    """
+    Idempotent seed.
+
+    If Phase 1 data already exists, backfill missing password
+    hashes without recreating the existing IAM data.
+    """
+
+    # Existing database: add passwords only where they are missing.
+    existing_users = db.scalars(select(User)).all()
+
+    if existing_users:
+        users_missing_passwords = [
+            user
+            for user in existing_users
+            if not user.password_hash
+        ]
+
+        if users_missing_passwords:
+            password, generated_password = _get_seed_password()
+
+            for user in users_missing_passwords:
+                user.password_hash = hash_password(password)
+                user.failed_attempts = 0
+                user.locked_until = None
+                user.status = "ACTIVE"
+
+            db.commit()
+
+            if generated_password:
+                print("Development seed password:", password)
+
         return
 
+    # Fresh database.
     departments = {
         name: Department(name=name)
         for name in DEPARTMENTS
@@ -210,6 +261,8 @@ def seed(db: Session) -> None:
                 )
             )
 
+    password, generated_password = _get_seed_password()
+
     users = {}
 
     for emp_id, username, full_name, dept, _, _ in USERS:
@@ -219,6 +272,10 @@ def seed(db: Session) -> None:
             full_name=full_name,
             email=f"{username}@example.test",
             department_id=departments[dept].id,
+            password_hash=hash_password(password),
+            status="ACTIVE",
+            failed_attempts=0,
+            locked_until=None,
         )
 
     db.add_all(users.values())
@@ -237,6 +294,9 @@ def seed(db: Session) -> None:
             )
 
     db.commit()
+
+    if generated_password:
+        print("Development seed password:", password)
 
 
 if __name__ == "__main__":
