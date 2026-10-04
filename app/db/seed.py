@@ -30,6 +30,11 @@ RESOURCES = [
     ("PROD-LINUX-01", "server", "Production Linux server"),
     ("PROD-WIN-01", "server", "Production Windows server"),
     ("PROD-DB-01", "database", "Production database server"),
+    (
+        "IdentityGuard",
+        "platform",
+        "IdentityGuard platform administration",
+    ),
 ]
 
 
@@ -45,6 +50,13 @@ PERMISSIONS = [
     ("PROD-LINUX-01", "admin"),
     ("PROD-WIN-01", "admin"),
     ("PROD-DB-01", "admin"),
+
+    # IdentityGuard platform permissions
+    ("IdentityGuard", "user.read"),
+    ("IdentityGuard", "role.assign"),
+    ("IdentityGuard", "role.assign_privileged"),
+    ("IdentityGuard", "role.remove"),
+    ("IdentityGuard", "audit.read"),
 ]
 
 
@@ -53,42 +65,90 @@ ROLES = {
     "SOC Analyst": (
         "Monitors and triages security alerts",
         False,
-        [("siem-console", "read"), ("siem-console", "triage")],
+        [
+            ("siem-console", "read"),
+            ("siem-console", "triage"),
+        ],
     ),
     "Finance Analyst": (
         "Reads the general ledger",
         False,
-        [("finance-ledger", "read")],
+        [
+            ("finance-ledger", "read"),
+        ],
     ),
     "Finance Manager": (
         "Finance oversight and reporting",
         False,
-        [("finance-ledger", "read")],
+        [
+            ("finance-ledger", "read"),
+        ],
     ),
     "HR Analyst": (
         "Maintains employee records",
         False,
-        [("hr-records", "read"), ("hr-records", "update")],
+        [
+            ("hr-records", "read"),
+            ("hr-records", "update"),
+        ],
     ),
     "System Administrator": (
         "Administers production servers",
         True,
-        [("PROD-LINUX-01", "admin"), ("PROD-WIN-01", "admin")],
+        [
+            ("PROD-LINUX-01", "admin"),
+            ("PROD-WIN-01", "admin"),
+        ],
     ),
     "Database Administrator": (
         "Administers production databases",
         True,
-        [("PROD-DB-01", "admin")],
+        [
+            ("PROD-DB-01", "admin"),
+        ],
     ),
     "Payment Initiator": (
         "Can create payments",
         False,
-        [("payments-system", "initiate")],
+        [
+            ("payments-system", "initiate"),
+        ],
     ),
     "Payment Approver": (
         "Can approve payments",
         False,
-        [("payments-system", "approve")],
+        [
+            ("payments-system", "approve"),
+        ],
+    ),
+
+    # IdentityGuard platform roles
+    "IAM Administrator": (
+        "Administrates IdentityGuard users, roles, and access",
+        True,
+        [
+            ("IdentityGuard", "user.read"),
+            ("IdentityGuard", "role.assign"),
+            ("IdentityGuard", "role.assign_privileged"),
+            ("IdentityGuard", "role.remove"),
+            ("IdentityGuard", "audit.read"),
+        ],
+    ),
+    "Security Auditor": (
+        "Reviews IdentityGuard audit information",
+        False,
+        [
+            ("IdentityGuard", "user.read"),
+            ("IdentityGuard", "audit.read"),
+        ],
+    ),
+    "Help Desk": (
+        "Performs approved user and role support operations",
+        False,
+        [
+            ("IdentityGuard", "user.read"),
+            ("IdentityGuard", "role.remove"),
+        ],
     ),
 }
 
@@ -173,17 +233,148 @@ def _get_seed_password() -> tuple[str, bool]:
     return password, True
 
 
+def _seed_platform_rbac(db: Session) -> None:
+    """
+    Add the IdentityGuard platform resource, permissions,
+    roles, and role-permission mappings.
+
+    This is idempotent and works with an existing database.
+    """
+
+    # ---------------------------------------------------------
+    # Platform resource
+    # ---------------------------------------------------------
+    resource = db.scalar(
+        select(Resource).where(Resource.name == "IdentityGuard")
+    )
+
+    if resource is None:
+        resource = Resource(
+            name="IdentityGuard",
+            resource_type="platform",
+            description="IdentityGuard platform administration",
+        )
+        db.add(resource)
+        db.flush()
+
+    # ---------------------------------------------------------
+    # Platform permissions
+    # ---------------------------------------------------------
+    platform_permissions = {
+        "user.read": "Read user information",
+        "role.assign": "Assign non-privileged roles",
+        "role.assign_privileged": "Assign privileged roles",
+        "role.remove": "Remove user roles",
+        "audit.read": "Read audit events",
+    }
+
+    permissions = {}
+
+    for action, description in platform_permissions.items():
+        permission = db.scalar(
+            select(Permission).where(
+                Permission.resource_id == resource.id,
+                Permission.action == action,
+            )
+        )
+
+        if permission is None:
+            permission = Permission(
+                resource_id=resource.id,
+                action=action,
+            )
+            db.add(permission)
+            db.flush()
+
+        permissions[action] = permission
+
+    # ---------------------------------------------------------
+    # Platform roles
+    # ---------------------------------------------------------
+    platform_roles = {
+        "IAM Administrator": (
+            "Administrates IdentityGuard users, roles, and access",
+            True,
+            [
+                "user.read",
+                "role.assign",
+                "role.assign_privileged",
+                "role.remove",
+                "audit.read",
+            ],
+        ),
+        "Security Auditor": (
+            "Reviews IdentityGuard audit information",
+            False,
+            [
+                "user.read",
+                "audit.read",
+            ],
+        ),
+        "Help Desk": (
+            "Performs approved user and role support operations",
+            False,
+            [
+                "user.read",
+                "role.remove",
+            ],
+        ),
+    }
+
+    for role_name, (description, privileged, permission_names) in (
+        platform_roles.items()
+    ):
+        role = db.scalar(
+            select(Role).where(Role.name == role_name)
+        )
+
+        if role is None:
+            role = Role(
+                name=role_name,
+                description=description,
+                is_privileged=privileged,
+            )
+            db.add(role)
+            db.flush()
+
+        for permission_name in permission_names:
+            permission = permissions[permission_name]
+
+            existing_mapping = db.scalar(
+                select(RolePermission).where(
+                    RolePermission.role_id == role.id,
+                    RolePermission.permission_id == permission.id,
+                )
+            )
+
+            if existing_mapping is None:
+                db.add(
+                    RolePermission(
+                        role_id=role.id,
+                        permission_id=permission.id,
+                    )
+                )
+
+    db.commit()
+
+
 def seed(db: Session) -> None:
     """
     Idempotent seed.
 
-    If Phase 1 data already exists, backfill missing password
-    hashes without recreating the existing IAM data.
+    Fresh database:
+        Creates the complete Phase 1 + Phase 3 + Phase 4 seed.
+
+    Existing database:
+        Preserves existing IAM data, backfills missing password
+        hashes, and adds missing Phase 4 platform RBAC data.
     """
 
-    # Existing database: add passwords only where they are missing.
     existing_users = db.scalars(select(User)).all()
 
+    # ---------------------------------------------------------
+    # Existing database
+    # ---------------------------------------------------------
     if existing_users:
         users_missing_passwords = [
             user
@@ -205,9 +396,14 @@ def seed(db: Session) -> None:
             if generated_password:
                 print("Development seed password:", password)
 
+        # Add Phase 4 platform RBAC without recreating existing data.
+        _seed_platform_rbac(db)
+
         return
 
-    # Fresh database.
+    # ---------------------------------------------------------
+    # Fresh database
+    # ---------------------------------------------------------
     departments = {
         name: Department(name=name)
         for name in DEPARTMENTS
@@ -229,6 +425,9 @@ def seed(db: Session) -> None:
 
     db.flush()
 
+    # ---------------------------------------------------------
+    # Permissions
+    # ---------------------------------------------------------
     permissions = {
         (res, action): Permission(
             resource_id=resources[res].id,
@@ -238,7 +437,11 @@ def seed(db: Session) -> None:
     }
 
     db.add_all(permissions.values())
+    db.flush()
 
+    # ---------------------------------------------------------
+    # Roles
+    # ---------------------------------------------------------
     roles = {}
 
     for name, (desc, privileged, perms) in ROLES.items():
@@ -252,6 +455,9 @@ def seed(db: Session) -> None:
     db.add_all(roles.values())
     db.flush()
 
+    # ---------------------------------------------------------
+    # Role -> Permission mappings
+    # ---------------------------------------------------------
     for name, (_, _, perms) in ROLES.items():
         for key in perms:
             db.add(
@@ -261,6 +467,9 @@ def seed(db: Session) -> None:
                 )
             )
 
+    # ---------------------------------------------------------
+    # Users
+    # ---------------------------------------------------------
     password, generated_password = _get_seed_password()
 
     users = {}
@@ -281,6 +490,9 @@ def seed(db: Session) -> None:
     db.add_all(users.values())
     db.flush()
 
+    # ---------------------------------------------------------
+    # User -> Role mappings
+    # ---------------------------------------------------------
     for _, username, _, _, manager, role_names in USERS:
         if manager:
             users[username].manager_id = users[manager].id
