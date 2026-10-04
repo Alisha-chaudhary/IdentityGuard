@@ -26,8 +26,9 @@ class EventType(str, Enum):
     # Authentication / authorization (used from Phase 3)
     LOGIN_SUCCEEDED = "LOGIN_SUCCEEDED"
     LOGIN_FAILED = "LOGIN_FAILED"
+    ACCOUNT_LOCKED = "ACCOUNT_LOCKED"
     ACCESS_DENIED = "ACCESS_DENIED"
-
+    
 
 class Result(str, Enum):
     SUCCESS = "SUCCESS"
