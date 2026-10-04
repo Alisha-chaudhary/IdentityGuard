@@ -1,8 +1,9 @@
 import pytest
+from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.db.models import Department, Role, User
+from app.db.models import Department, Role, User, UserRole
 from app.db.seed import seed
 
 
@@ -56,7 +57,7 @@ def test_seed_creates_expected_data(db):
     seed(db)
 
     assert len(db.scalars(select(User)).all()) == 7
-    assert len(db.scalars(select(Role)).all()) == 8
+    assert len(db.scalars(select(Role)).all()) == 11
 
 
 def test_seed_is_idempotent(db):
@@ -94,6 +95,7 @@ def test_privileged_roles_are_flagged(db):
     assert privileged == {
         "System Administrator",
         "Database Administrator",
+        "IAM Administrator",
     }
 
 
@@ -108,3 +110,42 @@ def test_seed_contains_stale_access_case(db):
 
     assert meera.department.name == "HR"
     assert "Finance Analyst" in roles  # stale: she moved to HR
+
+
+def test_user_role_can_have_expiry(db):
+    department = Department(name="Test")
+    db.add(department)
+    db.flush()
+
+    user = User(
+        employee_id="TEST001",
+        username="expiry.user",
+        full_name="Expiry User",
+        email="expiry@example.test",
+        status="ACTIVE",
+        department_id=department.id,
+    )
+
+    role = Role(
+        name="Temporary Role",
+        description="Role with an expiry",
+        is_privileged=False,
+    )
+
+    db.add_all([user, role])
+    db.flush()
+
+    expires_at = datetime(2026, 12, 31, 23, 59, 59)
+
+    assignment = UserRole(
+        user_id=user.id,
+        role_id=role.id,
+        expires_at=expires_at,
+    )
+
+    db.add(assignment)
+    db.commit()
+
+    db.refresh(assignment)
+
+    assert assignment.expires_at == expires_at

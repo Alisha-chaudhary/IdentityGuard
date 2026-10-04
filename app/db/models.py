@@ -194,6 +194,11 @@ class UserRole(Base):
         default=utcnow,
     )
 
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        default=None,
+    )
+
     user: Mapped[User] = relationship(
         back_populates="user_roles"
     )
