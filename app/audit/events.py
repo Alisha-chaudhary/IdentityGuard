@@ -4,6 +4,7 @@ from enum import Enum
 class EventType(str, Enum):
     # Identity lifecycle
     USER_CREATED = "USER_CREATED"
+    USER_MOVED = "USER_MOVED"
     USER_TERMINATED = "USER_TERMINATED"
     ROLE_ASSIGNED = "ROLE_ASSIGNED"
     ROLE_REMOVED = "ROLE_REMOVED"
