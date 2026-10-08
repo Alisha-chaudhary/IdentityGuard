@@ -52,6 +52,7 @@ PERMISSIONS = [
     ("PROD-DB-01", "admin"),
 
     # IdentityGuard platform permissions
+    ("IdentityGuard", "user.create"),
     ("IdentityGuard", "user.read"),
     ("IdentityGuard", "role.assign"),
     ("IdentityGuard", "role.assign_privileged"),
@@ -127,6 +128,7 @@ ROLES = {
         "Administrates IdentityGuard users, roles, and access",
         True,
         [
+            ("IdentityGuard", "user.create"),
             ("IdentityGuard", "user.read"),
             ("IdentityGuard", "role.assign"),
             ("IdentityGuard", "role.assign_privileged"),
@@ -261,6 +263,7 @@ def _seed_platform_rbac(db: Session) -> None:
     # Platform permissions
     # ---------------------------------------------------------
     platform_permissions = {
+        "user.create": "Create new users",
         "user.read": "Read user information",
         "role.assign": "Assign non-privileged roles",
         "role.assign_privileged": "Assign privileged roles",
@@ -296,6 +299,7 @@ def _seed_platform_rbac(db: Session) -> None:
             "Administrates IdentityGuard users, roles, and access",
             True,
             [
+                "user.create",
                 "user.read",
                 "role.assign",
                 "role.assign_privileged",
