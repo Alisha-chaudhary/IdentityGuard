@@ -28,11 +28,14 @@ class Department(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100), unique=True)
 
-    users: Mapped[list[User]] = relationship(back_populates="department")
+    users: Mapped[list[User]] = relationship(
+        back_populates="department"
+    )
 
 
 class User(Base):
     __tablename__ = "users"
+
     __table_args__ = (
         CheckConstraint(
             "status IN ('ACTIVE', 'DISABLED', 'LOCKED', 'TERMINATED')",
@@ -41,44 +44,47 @@ class User(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    employee_id: Mapped[str] = mapped_column(String(20), unique=True)
-    username: Mapped[str] = mapped_column(String(50), unique=True)
-    full_name: Mapped[str] = mapped_column(String(150))
-    email: Mapped[str] = mapped_column(String(255), unique=True)
-
+    employee_id: Mapped[str] = mapped_column(
+        String(20),
+        unique=True,
+    )
+    username: Mapped[str] = mapped_column(
+        String(50),
+        unique=True,
+    )
+    full_name: Mapped[str] = mapped_column(
+        String(150)
+    )
+    email: Mapped[str] = mapped_column(
+        String(255),
+        unique=True,
+    )
     password_hash: Mapped[str | None] = mapped_column(
         String(255),
         default=None,
     )
-
     status: Mapped[str] = mapped_column(
         String(20),
         default="ACTIVE",
     )
-
     failed_attempts: Mapped[int] = mapped_column(
-        default=0,
+        default=0
     )
-
     locked_until: Mapped[datetime | None] = mapped_column(
         DateTime,
         default=None,
     )
-
     department_id: Mapped[int] = mapped_column(
         ForeignKey("departments.id")
     )
-
     manager_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id"),
         default=None,
     )
-
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=utcnow,
     )
-
     terminated_at: Mapped[datetime | None] = mapped_column(
         DateTime,
         default=None,
@@ -106,7 +112,10 @@ class Role(Base):
     __tablename__ = "roles"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(100), unique=True)
+    name: Mapped[str] = mapped_column(
+        String(100),
+        unique=True,
+    )
     description: Mapped[str] = mapped_column(
         String(255),
         default="",
@@ -158,11 +167,9 @@ class Permission(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-
     resource_id: Mapped[int] = mapped_column(
         ForeignKey("resources.id")
     )
-
     action: Mapped[str] = mapped_column(
         String(50)
     )
@@ -183,17 +190,14 @@ class UserRole(Base):
         ForeignKey("users.id"),
         primary_key=True,
     )
-
     role_id: Mapped[int] = mapped_column(
         ForeignKey("roles.id"),
         primary_key=True,
     )
-
     assigned_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=utcnow,
     )
-
     expires_at: Mapped[datetime | None] = mapped_column(
         DateTime,
         default=None,
@@ -208,6 +212,94 @@ class UserRole(Base):
     )
 
 
+class AccessRequest(Base):
+    __tablename__ = "access_requests"
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('REQUESTED', 'APPROVED', 'REJECTED', 'PROVISIONED')",
+            name="ck_access_requests_status",
+        ),
+        Index(
+            "ix_access_requests_requester",
+            "requester_id",
+        ),
+        Index(
+            "ix_access_requests_target_user",
+            "target_user_id",
+        ),
+        Index(
+            "ix_access_requests_status",
+            "status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        primary_key=True
+    )
+
+    requester_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id")
+    )
+
+    target_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id")
+    )
+
+    role_id: Mapped[int] = mapped_column(
+        ForeignKey("roles.id")
+    )
+
+    justification: Mapped[str] = mapped_column(
+        String(500)
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="REQUESTED",
+    )
+
+    decision_by: Mapped[str | None] = mapped_column(
+        String(100),
+        default=None,
+    )
+
+    decision_reason: Mapped[str | None] = mapped_column(
+        String(500),
+        default=None,
+    )
+
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=utcnow,
+    )
+
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        default=None,
+    )
+
+    provisioned_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        default=None,
+    )
+
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        default=None,
+    )
+
+    requester: Mapped[User] = relationship(
+        foreign_keys=[requester_id]
+    )
+
+    target_user: Mapped[User] = relationship(
+        foreign_keys=[target_user_id]
+    )
+
+    role: Mapped[Role] = relationship()
+
+
 class RolePermission(Base):
     __tablename__ = "role_permissions"
 
@@ -215,7 +307,6 @@ class RolePermission(Base):
         ForeignKey("roles.id"),
         primary_key=True,
     )
-
     permission_id: Mapped[int] = mapped_column(
         ForeignKey("permissions.id"),
         primary_key=True,
@@ -229,38 +320,77 @@ class RolePermission(Base):
         back_populates="role_permissions"
     )
 
+
 class AuditEvent(Base):
     __tablename__ = "audit_events"
+
     __table_args__ = (
         CheckConstraint(
             "result IN ('SUCCESS', 'DENIED', 'FAILURE')",
             name="ck_audit_result",
         ),
-        Index("ix_audit_correlation", "correlation_id"),
-        Index("ix_audit_event_type", "event_type"),
-        {"sqlite_autoincrement": True},  # ids are never reused
+        Index(
+            "ix_audit_correlation",
+            "correlation_id",
+        ),
+        Index(
+            "ix_audit_event_type",
+            "event_type",
+        ),
+        {"sqlite_autoincrement": True},
     )
 
     id: Mapped[int] = mapped_column(
         primary_key=True,
         autoincrement=True,
     )
+
     timestamp: Mapped[datetime] = mapped_column(
         DateTime
     )  # naive UTC
-    actor: Mapped[str] = mapped_column(String(100))
-    event_type: Mapped[str] = mapped_column(String(50))
-    target: Mapped[str] = mapped_column(String(200))
-    action: Mapped[str] = mapped_column(String(100))
-    result: Mapped[str] = mapped_column(String(10))
-    reason: Mapped[str] = mapped_column(String(500), default="")
-    correlation_id: Mapped[str] = mapped_column(String(64))
-    prev_hash: Mapped[str] = mapped_column(String(64))
-    event_hash: Mapped[str] = mapped_column(String(64))
+
+    actor: Mapped[str] = mapped_column(
+        String(100)
+    )
+
+    event_type: Mapped[str] = mapped_column(
+        String(50)
+    )
+
+    target: Mapped[str] = mapped_column(
+        String(200)
+    )
+
+    action: Mapped[str] = mapped_column(
+        String(100)
+    )
+
+    result: Mapped[str] = mapped_column(
+        String(10)
+    )
+
+    reason: Mapped[str] = mapped_column(
+        String(500),
+        default="",
+    )
+
+    correlation_id: Mapped[str] = mapped_column(
+        String(64)
+    )
+
+    prev_hash: Mapped[str] = mapped_column(
+        String(64)
+    )
+
+    event_hash: Mapped[str] = mapped_column(
+        String(64)
+    )
 
 
-# Append-only enforcement: the database itself refuses edits and deletes.
-for _name, _op in (("update", "UPDATE"), ("delete", "DELETE")):
+for _name, _op in (
+    ("update", "UPDATE"),
+    ("delete", "DELETE"),
+):
     event.listen(
         AuditEvent.__table__,
         "after_create",

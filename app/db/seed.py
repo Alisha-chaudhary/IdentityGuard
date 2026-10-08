@@ -58,6 +58,9 @@ PERMISSIONS = [
     ("IdentityGuard", "role.assign_privileged"),
     ("IdentityGuard", "role.remove"),
     ("IdentityGuard", "audit.read"),
+    ("IdentityGuard", "access.request"),
+    ("IdentityGuard", "access.approve"),
+    ("IdentityGuard", "access.provision"),
 ]
 
 
@@ -134,6 +137,9 @@ ROLES = {
             ("IdentityGuard", "role.assign_privileged"),
             ("IdentityGuard", "role.remove"),
             ("IdentityGuard", "audit.read"),
+            ("IdentityGuard", "access.request"),
+            ("IdentityGuard", "access.approve"),
+            ("IdentityGuard", "access.provision"),
         ],
     ),
     "Security Auditor": (
@@ -269,6 +275,9 @@ def _seed_platform_rbac(db: Session) -> None:
         "role.assign_privileged": "Assign privileged roles",
         "role.remove": "Remove user roles",
         "audit.read": "Read audit events",
+        "access.request": "Submit access requests",
+        "access.approve": "Approve or reject access requests",
+        "access.provision": "Provision approved access",
     }
 
     permissions = {}
@@ -305,6 +314,9 @@ def _seed_platform_rbac(db: Session) -> None:
                 "role.assign_privileged",
                 "role.remove",
                 "audit.read",
+                "access.request",
+                "access.approve",
+                "access.provision",
             ],
         ),
         "Security Auditor": (
@@ -367,11 +379,12 @@ def seed(db: Session) -> None:
     Idempotent seed.
 
     Fresh database:
-        Creates the complete Phase 1 + Phase 3 + Phase 4 seed.
+        Creates the complete Phase 1 + Phase 3 + Phase 4 +
+        Phase 6 seed.
 
     Existing database:
         Preserves existing IAM data, backfills missing password
-        hashes, and adds missing Phase 4 platform RBAC data.
+        hashes, and adds missing platform RBAC data.
     """
 
     existing_users = db.scalars(select(User)).all()
@@ -400,7 +413,7 @@ def seed(db: Session) -> None:
             if generated_password:
                 print("Development seed password:", password)
 
-        # Add Phase 4 platform RBAC without recreating existing data.
+        # Add or backfill platform RBAC.
         _seed_platform_rbac(db)
 
         return
