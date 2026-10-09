@@ -182,7 +182,6 @@ class Permission(Base):
         back_populates="permission"
     )
 
-
 class UserRole(Base):
     __tablename__ = "user_roles"
 
@@ -211,6 +210,126 @@ class UserRole(Base):
         back_populates="user_roles"
     )
 
+class AccessReviewCycle(Base):
+    __tablename__ = "access_review_cycles"
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('OPEN', 'COMPLETED')",
+            name="ck_access_review_cycles_status",
+        ),
+        Index(
+            "ix_access_review_cycles_status",
+            "status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    name: Mapped[str] = mapped_column(
+        String(150),
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="OPEN",
+    )
+
+    created_by_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id"),
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=utcnow,
+    )
+
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        default=None,
+    )
+
+    created_by: Mapped[User] = relationship(
+        foreign_keys=[created_by_id],
+    )
+
+    items: Mapped[list[AccessReviewItem]] = relationship(
+        back_populates="cycle",
+        order_by="AccessReviewItem.id",
+    )
+
+
+class AccessReviewItem(Base):
+    __tablename__ = "access_review_items"
+
+    __table_args__ = (
+        CheckConstraint(
+            "decision IN ('PENDING', 'RETAIN', 'REVOKE')",
+            name="ck_access_review_items_decision",
+        ),
+        UniqueConstraint(
+            "cycle_id",
+            "user_id",
+            "role_id",
+            name="uq_access_review_item_assignment",
+        ),
+        Index(
+            "ix_access_review_items_cycle",
+            "cycle_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    cycle_id: Mapped[int] = mapped_column(
+        ForeignKey("access_review_cycles.id"),
+    )
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id"),
+    )
+
+    role_id: Mapped[int] = mapped_column(
+        ForeignKey("roles.id"),
+    )
+
+    assignment_assigned_at: Mapped[datetime] = mapped_column(
+        DateTime,
+    )
+
+    decision: Mapped[str] = mapped_column(
+        String(20),
+        default="PENDING",
+    )
+
+    reviewer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"),
+        default=None,
+    )
+
+    decision_reason: Mapped[str | None] = mapped_column(
+        String(500),
+        default=None,
+    )
+
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        default=None,
+    )
+
+    cycle: Mapped[AccessReviewCycle] = relationship(
+        back_populates="items",
+    )
+
+    user: Mapped[User] = relationship(
+        foreign_keys=[user_id],
+    )
+
+    role: Mapped[Role] = relationship()
+
+    reviewer: Mapped[User | None] = relationship(
+        foreign_keys=[reviewer_id],
+    )
 
 class AccessRequest(Base):
     __tablename__ = "access_requests"
