@@ -12,7 +12,9 @@ from app.reports.pam_activity import get_pam_activity_report
 from app.reports.role_access_assignment import (
     get_role_access_assignments,
 )
-
+from app.reports.access_review_summary import (
+    get_access_review_summary,
+)
 from app.reports.access_request_history import (
     get_access_request_history,
 )
@@ -224,3 +226,52 @@ def audit_trail_report(
         correlation_id=correlation_id,
         limit=limit,
     )
+
+class AccessReviewSummaryItemResponse(BaseModel):
+    item_id: int
+    user_id: int
+    username: str | None
+    role_id: int
+    role_name: str | None
+    assignment_assigned_at: datetime
+    decision: str
+    reviewer_id: int | None
+    reviewer_username: str | None
+    decision_reason: str | None
+    decided_at: datetime | None
+
+class AccessReviewCycleSummaryResponse(BaseModel):
+    cycle_id: int
+    name: str
+    status: str
+    created_by_id: int
+    creator_username: str
+    created_at: datetime
+    completed_at: datetime | None
+    total_count: int
+    pending_count: int
+    retain_count: int
+    revoke_decision_count: int
+    decided_count: int
+    completion_percentage: float
+    items: list[AccessReviewSummaryItemResponse]
+
+class AccessReviewSummaryReportResponse(BaseModel):
+    total_cycles: int
+    open_cycles: int
+    completed_cycles: int
+    total_review_items: int
+    pending_decisions: int
+    items: list[AccessReviewCycleSummaryResponse]
+
+@router.get(
+    "/access-review-summary",
+    response_model=AccessReviewSummaryReportResponse,
+)
+def access_review_summary_report(
+    current_user: User = Depends(
+        require_permission("IdentityGuard:reports.read")
+    ),
+    db: Session = Depends(get_db),
+) -> dict:
+    return get_access_review_summary(db)
