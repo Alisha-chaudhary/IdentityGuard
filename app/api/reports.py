@@ -1,13 +1,13 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_permission
 from app.db.models import User
 from app.reports.identity_inventory import get_identity_inventory
-
+from app.reports.audit_trail import get_audit_trail
 from app.reports.pam_activity import get_pam_activity_report
 from app.reports.role_access_assignment import (
     get_role_access_assignments,
@@ -174,3 +174,53 @@ def role_access_assignment_report(
     db: Session = Depends(get_db),
 ) -> dict:
     return get_role_access_assignments(db)
+
+class AuditTrailItemResponse(BaseModel):
+    event_id: int
+    timestamp: datetime
+    actor: str
+    event_type: str
+    target: str
+    action: str
+    result: str
+    reason: str
+    correlation_id: str
+
+
+class AuditTrailIntegrityResponse(BaseModel):
+    ok: bool
+    checked: int
+    first_bad_id: int | None
+
+
+class AuditTrailReportResponse(BaseModel):
+    total_count: int
+    success_count: int
+    denied_count: int
+    failure_count: int
+    integrity: AuditTrailIntegrityResponse
+    items: list[AuditTrailItemResponse]
+
+@router.get(
+    "/audit-trail",
+    response_model=AuditTrailReportResponse,
+)
+def audit_trail_report(
+    event_type: str | None = None,
+    actor: str | None = None,
+    target: str | None = None,
+    correlation_id: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    current_user: User = Depends(
+        require_permission("IdentityGuard:reports.read")
+    ),
+    db: Session = Depends(get_db),
+) -> dict:
+    return get_audit_trail(
+        db,
+        event_type=event_type,
+        actor=actor,
+        target=target,
+        correlation_id=correlation_id,
+        limit=limit,
+    )
