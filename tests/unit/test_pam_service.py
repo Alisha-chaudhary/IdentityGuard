@@ -5,12 +5,13 @@ from app.db.models import Department, User, AuditEvent
 from app.pam.models import PamAccessRequest, PamAccount, PamCheckout, PamSafe
 from app.pam.service import (
     PamAuthorizationError,
+    PamNotFoundError,
     PamValidationError,
     checkout_privileged_access,
     decide_privileged_access,
     request_privileged_access,
+    revoke_privileged_checkout,
 )
-
 
 def create_user(db, username: str, status: str = "ACTIVE") -> User:
     department = Department(name=f"{username}-department")
@@ -511,3 +512,128 @@ def test_checkout_records_audit_event(db):
     assert events[0].actor == requester.username
     assert events[0].action == "CHECKOUT_PRIVILEGED_ACCESS"
     assert events[0].result == "SUCCESS"
+
+
+def create_active_checkout(db):
+    requester = create_user(db, "pam_revoke_requester")
+    approver = create_user(db, "pam_revoke_approver")
+    account = create_account(db)
+    request = create_request(db, requester, account)
+
+    decide_privileged_access(
+        db,
+        request_id=request.id,
+        approver_id=approver.id,
+        decision="APPROVED",
+        reason="Approved for controlled maintenance",
+    )
+
+    return checkout_privileged_access(
+        db,
+        request_id=request.id,
+        user_id=requester.id,
+    ), approver
+
+
+def test_active_checkout_can_be_revoked(db):
+    checkout, approver = create_active_checkout(db)
+
+    revoked = revoke_privileged_checkout(
+        db,
+        checkout_id=checkout.id,
+        actor_id=approver.id,
+        reason="Maintenance window completed early",
+    )
+
+    assert revoked.status == "REVOKED"
+    assert revoked.ended_at is not None
+
+
+def test_revocation_records_audit_event(db):
+    checkout, approver = create_active_checkout(db)
+
+    revoke_privileged_checkout(
+        db,
+        checkout_id=checkout.id,
+        actor_id=approver.id,
+        reason="Emergency access no longer required",
+    )
+
+    events = db.scalars(
+        select(AuditEvent).where(
+            AuditEvent.target == f"pam_checkout:{checkout.id}",
+            AuditEvent.action == "REVOKE_PRIVILEGED_CHECKOUT",
+        )
+    ).all()
+
+    assert len(events) == 1
+    assert events[0].event_type == "PRIVILEGED_CHECKOUT_REVOKED"
+    assert events[0].actor == approver.username
+
+
+def test_missing_checkout_cannot_be_revoked(db):
+    actor = create_user(db, "pam_revoke_missing_actor")
+
+    with pytest.raises(PamNotFoundError):
+        revoke_privileged_checkout(
+            db,
+            checkout_id=9999,
+            actor_id=actor.id,
+            reason="Test missing checkout",
+        )
+
+
+def test_inactive_user_cannot_revoke_checkout(db):
+    checkout, actor = create_active_checkout(db)
+    actor.status = "DISABLED"
+    db.flush()
+
+    with pytest.raises(PamAuthorizationError):
+        revoke_privileged_checkout(
+            db,
+            checkout_id=checkout.id,
+            actor_id=actor.id,
+            reason="Test inactive actor",
+        )
+
+
+def test_checkout_cannot_be_revoked_twice(db):
+    checkout, actor = create_active_checkout(db)
+
+    revoke_privileged_checkout(
+        db,
+        checkout_id=checkout.id,
+        actor_id=actor.id,
+        reason="First revocation",
+    )
+
+    with pytest.raises(PamAuthorizationError):
+        revoke_privileged_checkout(
+            db,
+            checkout_id=checkout.id,
+            actor_id=actor.id,
+            reason="Second revocation",
+        )
+
+
+def test_revocation_requires_a_reason(db):
+    checkout, actor = create_active_checkout(db)
+
+    with pytest.raises(PamValidationError):
+        revoke_privileged_checkout(
+            db,
+            checkout_id=checkout.id,
+            actor_id=actor.id,
+            reason="   ",
+        )
+
+def test_revocation_reason_cannot_exceed_500_characters(db):
+    checkout, actor = create_active_checkout(db)
+
+    with pytest.raises(PamValidationError):
+        revoke_privileged_checkout(
+            db,
+            checkout_id=checkout.id,
+            actor_id=actor.id,
+            reason="R" * 501,
+        )

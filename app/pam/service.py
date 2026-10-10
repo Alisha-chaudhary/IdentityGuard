@@ -260,3 +260,54 @@ def checkout_privileged_access(
     except Exception:
         db.rollback()
         raise
+
+
+def revoke_privileged_checkout(
+    db: Session,
+    *,
+    checkout_id: int,
+    actor_id: int,
+    reason: str,
+) -> PamCheckout:
+    """Revoke an active privileged checkout and record the audit event."""
+    actor = _require_active_user(db, actor_id)
+
+    if not isinstance(reason, str) or not reason.strip():
+        raise PamValidationError("A revocation reason is required.")
+
+    reason = reason.strip()
+    if len(reason) > 500:
+        raise PamValidationError(
+            "Revocation reason must be 500 characters or fewer."
+        )
+
+    checkout = db.get(PamCheckout, checkout_id)
+    if checkout is None:
+        raise PamNotFoundError("PAM checkout not found.")
+
+    if checkout.status != "ACTIVE":
+        raise PamAuthorizationError(
+            "Only active checkouts can be revoked."
+        )
+
+    try:
+        revoked_at = _utcnow()
+        checkout.status = "REVOKED"
+        checkout.ended_at = revoked_at
+
+        db.flush()
+        record_event(
+            db,
+            actor=actor.username,
+            event_type=EventType.PRIVILEGED_CHECKOUT_REVOKED,
+            target=f"pam_checkout:{checkout.id}",
+            action="REVOKE_PRIVILEGED_CHECKOUT",
+            result=Result.SUCCESS,
+            reason=reason,
+        )
+        db.commit()
+        db.refresh(checkout)
+        return checkout
+    except Exception:
+        db.rollback()
+        raise

@@ -65,6 +65,10 @@ PERMISSIONS = [
     ("IdentityGuard", "access_review.view"),
     ("IdentityGuard", "access_review.decide"),
     ("IdentityGuard", "access_review.complete"),
+    ("IdentityGuard", "pam.request"),
+    ("IdentityGuard", "pam.approve"),
+    ("IdentityGuard", "pam.checkout"),
+    ("IdentityGuard", "pam.revoke"),
 ]
 
 
@@ -147,6 +151,10 @@ ROLES = {
             ("IdentityGuard", "access_review.create"),
             ("IdentityGuard", "access_review.view"),
             ("IdentityGuard", "access_review.complete"),
+            ("IdentityGuard", "pam.request"),
+            ("IdentityGuard", "pam.approve"),
+            ("IdentityGuard", "pam.checkout"),
+            ("IdentityGuard", "pam.revoke"),
         ],
     ),
     "Security Auditor": (
@@ -290,6 +298,10 @@ def _seed_platform_rbac(db: Session) -> None:
         "access_review.view": "View access review cycles",
         "access_review.decide": "Record access review decisions",
         "access_review.complete": "Complete access review cycles",
+        "pam.request": "Submit privileged access requests",
+        "pam.approve": "Approve or reject privileged access requests",
+        "pam.checkout": "Check out approved privileged access",
+        "pam.revoke": "Revoke active privileged access checkouts",
     }
 
     permissions = {}
@@ -332,6 +344,10 @@ def _seed_platform_rbac(db: Session) -> None:
                 "access_review.create",
                 "access_review.view",
                 "access_review.complete",
+                "pam.request",
+                "pam.approve",
+                "pam.checkout",
+                "pam.revoke",
             ],
         ),
         "Security Auditor": (
