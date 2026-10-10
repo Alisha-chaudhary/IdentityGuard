@@ -69,6 +69,7 @@ PERMISSIONS = [
     ("IdentityGuard", "pam.approve"),
     ("IdentityGuard", "pam.checkout"),
     ("IdentityGuard", "pam.revoke"),
+    ("IdentityGuard", "reports.read"),
 ]
 
 
@@ -155,6 +156,7 @@ ROLES = {
             ("IdentityGuard", "pam.approve"),
             ("IdentityGuard", "pam.checkout"),
             ("IdentityGuard", "pam.revoke"),
+            ("IdentityGuard", "reports.read"),
         ],
     ),
     "Security Auditor": (
@@ -164,6 +166,7 @@ ROLES = {
             ("IdentityGuard", "user.read"),
             ("IdentityGuard", "audit.read"),
             ("IdentityGuard", "access_review.view"),
+            ("IdentityGuard", "reports.read"),
         ],
     ),
     "Help Desk": (
@@ -302,6 +305,7 @@ def _seed_platform_rbac(db: Session) -> None:
         "pam.approve": "Approve or reject privileged access requests",
         "pam.checkout": "Check out approved privileged access",
         "pam.revoke": "Revoke active privileged access checkouts",
+        "reports.read": "Read identity and governance reports",
     }
 
     permissions = {}
@@ -348,6 +352,7 @@ def _seed_platform_rbac(db: Session) -> None:
                 "pam.approve",
                 "pam.checkout",
                 "pam.revoke",
+                "reports.read",
             ],
         ),
         "Security Auditor": (
@@ -358,6 +363,7 @@ def _seed_platform_rbac(db: Session) -> None:
                 "audit.read",
                 "access_review.view",
                 "access_review.decide",
+                "reports.read",
             ],
         ),
         "Help Desk": (

@@ -7,6 +7,7 @@ from app.api.jml import router as jml_router
 from app.api.access_requests import router as access_requests_router
 from app.api.access_reviews import router as access_reviews_router
 from app.api.pam import router as pam_router
+from app.api.reports import router as reports_router
 
 app = FastAPI(
     title="IdentityGuard",
@@ -25,6 +26,7 @@ app.include_router(jml_router)
 app.include_router(access_requests_router)
 app.include_router(access_reviews_router)
 app.include_router(pam_router)
+app.include_router(reports_router)
 
 @app.get("/health")
 def health() -> dict:
