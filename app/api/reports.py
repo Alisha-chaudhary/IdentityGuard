@@ -9,6 +9,13 @@ from app.db.models import User
 from app.reports.identity_inventory import get_identity_inventory
 
 from app.reports.pam_activity import get_pam_activity_report
+from app.reports.role_access_assignment import (
+    get_role_access_assignments,
+)
+
+from app.reports.access_request_history import (
+    get_access_request_history,
+)
 
 
 router = APIRouter(
@@ -46,6 +53,32 @@ def identity_inventory_report(
     db: Session = Depends(get_db),
 ) -> dict:
     return get_identity_inventory(db)
+
+class AccessRequestHistoryItemResponse(BaseModel):
+    request_id: int
+    requester_id: int
+    requester_username: str
+    target_user_id: int
+    target_username: str
+    role_id: int
+    role_name: str
+    is_privileged: bool
+    justification: str
+    status: str
+    decision_by: str | None
+    decision_reason: str | None
+    requested_at: datetime
+    decided_at: datetime | None
+    provisioned_at: datetime | None
+    expires_at: datetime | None
+
+class AccessRequestHistoryResponse(BaseModel):
+    total_count: int
+    requested_count: int
+    approved_count: int
+    rejected_count: int
+    provisioned_count: int
+    items: list[AccessRequestHistoryItemResponse]
 
 class PamSessionActivityResponse(BaseModel):
     session_id: int
@@ -92,3 +125,52 @@ def pam_activity_report(
     db: Session = Depends(get_db),
 ) -> dict:
     return get_pam_activity_report(db)
+
+@router.get(
+    "/access-request-history",
+    response_model=AccessRequestHistoryResponse,
+)
+def access_request_history_report(
+    current_user: User = Depends(
+        require_permission("IdentityGuard:reports.read")
+    ),
+    db: Session = Depends(get_db),
+) -> dict:
+    return get_access_request_history(db)
+
+class RoleAccessAssignmentItemResponse(BaseModel):
+    user_id: int
+    username: str
+    employee_id: str
+    full_name: str
+    department: str
+    user_status: str
+    role_id: int
+    role_name: str
+    role_description: str
+    is_privileged: bool
+    assigned_at: datetime
+    expires_at: datetime | None
+    assignment_status: str
+
+
+class RoleAccessAssignmentReportResponse(BaseModel):
+    total_count: int
+    active_count: int
+    expired_count: int
+    disabled_user_count: int
+    privileged_assignment_count: int
+    items: list[RoleAccessAssignmentItemResponse]
+
+
+@router.get(
+    "/role-access-assignments",
+    response_model=RoleAccessAssignmentReportResponse,
+)
+def role_access_assignment_report(
+    current_user: User = Depends(
+        require_permission("IdentityGuard:reports.read")
+    ),
+    db: Session = Depends(get_db),
+) -> dict:
+    return get_role_access_assignments(db)
