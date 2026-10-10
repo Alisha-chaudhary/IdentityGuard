@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, get_db, require_permission
 from app.db.models import AccessRequest, User
 from app.iam.access_requests import (
+    SodConflictError,
     AccessRequestAlreadyProvisionedError,
     AccessRequestAlreadyDecidedError,
     AccessRequestError,
@@ -85,6 +86,12 @@ def _map_error(error: AccessRequestError) -> HTTPException:
             AccessRequestAlreadyProvisionedError,
         ),
     ):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        )
+
+    if isinstance(error, SodConflictError):
         return HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(error),

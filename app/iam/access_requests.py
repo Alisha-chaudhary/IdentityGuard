@@ -1,6 +1,6 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
+from app.governance.sod import evaluate_user_sod
 from app.audit.events import EventType, Result
 from app.audit.service import record_event
 from app.core.clock import now
@@ -41,6 +41,10 @@ class AccessRequestNotApprovedError(AccessRequestError):
 
 class AccessRequestAlreadyProvisionedError(AccessRequestError):
     pass
+
+
+class SodConflictError(AccessRequestError):
+    """Raised when provisioning would violate an SoD policy."""
 
 
 def _get_user(db: Session, user_id: int) -> User:
@@ -254,6 +258,34 @@ def provision_access_request(
     if existing_assignment is not None:
         raise AccessRequestAlreadyProvisionedError(
             "User already has this role"
+        )
+
+
+    conflicts = evaluate_user_sod(
+        db,
+        target_user.id,
+        additional_role_id=role.id,
+    )
+
+    if conflicts:
+        reason = "; ".join(
+            conflict.description for conflict in conflicts
+        )
+
+        record_event(
+            db,
+            actor=provisioner.username,
+            event_type=EventType.SOD_VIOLATION,
+            target=target_user.username,
+            action="provision_access",
+            result=Result.DENIED,
+            reason=reason,
+        )
+
+        db.commit()
+
+        raise SodConflictError(
+            f"Provisioning blocked by SoD policy: {reason}"
         )
 
     assignment = UserRole(

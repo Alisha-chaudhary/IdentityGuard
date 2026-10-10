@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 import pytest
-
+from app.iam.access_requests import SodConflictError
 from app.audit.events import EventType
 from app.db.models import AuditEvent
 from app.core.clock import FrozenClock, set_clock
@@ -524,3 +524,66 @@ def test_cannot_provision_same_role_twice(db):
             request_id=duplicate_request.id,
             provisioner=approver,
         )
+
+
+def test_sod_conflict_blocks_provisioning_and_records_audit(db):
+    department = create_department(db)
+
+    requester = create_user(db, department, "requester", "EMP101")
+    approver = create_user(db, department, "approver", "EMP102")
+    target = create_user(db, department, "target", "EMP103")
+
+    initiator_role = create_role(db, "Payment Initiator")
+    approver_role = create_role(db, "Payment Approver")
+
+    db.add(
+        UserRole(
+            user_id=target.id,
+            role_id=initiator_role.id,
+        )
+    )
+    db.commit()
+
+    request = create_access_request(
+        db=db,
+        requester_id=requester.id,
+        target_user_id=target.id,
+        role_id=approver_role.id,
+        justification="Request payment approval access",
+    )
+
+    approve_access_request(
+        db=db,
+        request_id=request.id,
+        approver=approver,
+        reason="Approved for testing",
+    )
+
+    with pytest.raises(SodConflictError, match="SoD policy"):
+        provision_access_request(
+            db=db,
+            request_id=request.id,
+            provisioner=approver,
+        )
+
+    assignments = (
+        db.query(UserRole)
+        .filter(UserRole.user_id == target.id)
+        .all()
+    )
+
+    assert {item.role_id for item in assignments} == {
+        initiator_role.id
+    }
+    assert request.status == "APPROVED"
+    assert request.provisioned_at is None
+
+    event = (
+        db.query(AuditEvent)
+        .filter(AuditEvent.event_type == EventType.SOD_VIOLATION)
+        .one()
+    )
+
+    assert event.actor == approver.username
+    assert event.target == target.username
+    assert event.result == "DENIED"
