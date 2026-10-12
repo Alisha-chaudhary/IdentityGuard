@@ -6,9 +6,18 @@ from sqlalchemy import select
 from app.api.deps import get_db
 from app.audit.events import EventType
 from app.audit.service import verify_chain
-from app.db.models import AuditEvent, Department, User
 from app.main import app
 from app.core.security import create_access_token, hash_password
+from app.db.models import (
+    AuditEvent,
+    Department,
+    Permission,
+    Resource,
+    Role,
+    RolePermission,
+    User,
+    UserRole,
+)
 
 
 def create_test_user(
@@ -17,13 +26,14 @@ def create_test_user(
     username="test.user",
     password="StrongPassword!2026",
     status="ACTIVE",
+    platform_access=True,
 ):
     department = Department(name="Test")
     db.add(department)
     db.flush()
 
     user = User(
-        employee_id="TEST001",
+        employee_id="TEST001" if username == "test.user" else f"TEST-{username}",
         username=username,
         full_name="Test User",
         email=f"{username}@example.test",
@@ -35,11 +45,48 @@ def create_test_user(
     )
 
     db.add(user)
+    db.flush()
+
+    if platform_access:
+        resource = Resource(
+            name="IdentityGuard",
+            resource_type="APPLICATION",
+        )
+        db.add(resource)
+        db.flush()
+
+        permission = Permission(
+            resource_id=resource.id,
+            action="user.read",
+        )
+        db.add(permission)
+        db.flush()
+
+        role = Role(
+            name=f"Test Platform Role {username}",
+            description="Test-only platform access",
+            is_privileged=False,
+        )
+        db.add(role)
+        db.flush()
+
+        db.add(
+            RolePermission(
+                role_id=role.id,
+                permission_id=permission.id,
+            )
+        )
+        db.add(
+            UserRole(
+                user_id=user.id,
+                role_id=role.id,
+            )
+        )
+
     db.commit()
     db.refresh(user)
 
     return user
-
 
 def make_client(db):
     def override_get_db():
@@ -75,6 +122,34 @@ def test_login_returns_access_token(db):
     finally:
         teardown_client()
 
+def test_valid_credentials_without_platform_access_are_denied(db):
+    create_test_user(db, platform_access=False)
+    client = make_client(db)
+
+    try:
+        response = client.post(
+            "/auth/login",
+            json={
+                "username": "test.user",
+                "password": "StrongPassword!2026",
+            },
+        )
+
+        assert response.status_code == 401
+        assert response.json()["detail"] == "Invalid credentials"
+
+        events = db.scalars(
+            select(AuditEvent).where(
+                AuditEvent.actor == "test.user",
+                AuditEvent.event_type == EventType.ACCESS_DENIED,
+                AuditEvent.target == "IdentityGuard:workspace",
+            )
+        ).all()
+
+        assert len(events) == 1
+        assert events[0].result == "DENIED"
+    finally:
+        teardown_client()
 
 def test_login_wrong_password_returns_generic_401(db):
     create_test_user(db)

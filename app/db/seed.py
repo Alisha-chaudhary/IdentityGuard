@@ -172,10 +172,7 @@ ROLES = {
     "Help Desk": (
         "Performs approved user and role support operations",
         False,
-        [
-            ("IdentityGuard", "user.read"),
-            ("IdentityGuard", "role.remove"),
-        ],
+        [],
     ),
 }
 
@@ -362,17 +359,14 @@ def _seed_platform_rbac(db: Session) -> None:
                 "user.read",
                 "audit.read",
                 "access_review.view",
-                "access_review.decide",
                 "reports.read",
             ],
         ),
+
         "Help Desk": (
             "Performs approved user and role support operations",
             False,
-            [
-                "user.read",
-                "role.remove",
-            ],
+            [],
         ),
     }
 
@@ -410,6 +404,41 @@ def _seed_platform_rbac(db: Session) -> None:
                     )
                 )
 
+    # Revoke all IdentityGuard platform permissions from Help Desk,
+    # including mappings left by earlier seed versions.
+    help_desk = db.scalar(
+        select(Role).where(Role.name == "Help Desk")
+    )
+    if help_desk is not None:
+        for permission in permissions.values():
+            existing_mapping = db.scalar(
+                select(RolePermission).where(
+                    RolePermission.role_id == help_desk.id,
+                    RolePermission.permission_id == permission.id,
+                )
+            )
+            if existing_mapping is not None:
+                db.delete(existing_mapping)
+
+    # Remove the obsolete decision permission from Security Auditor
+    # in databases seeded by older versions.
+    security_auditor = db.scalar(
+        select(Role).where(Role.name == "Security Auditor")
+    )
+    decide_permission = permissions["access_review.decide"]
+
+    if security_auditor is not None:
+        obsolete_mapping = db.scalar(
+            select(RolePermission).where(
+                RolePermission.role_id == security_auditor.id,
+                RolePermission.permission_id == decide_permission.id,
+            )
+        )
+
+        if obsolete_mapping is not None:
+            db.delete(obsolete_mapping)
+
+
     db.commit()
 
 
@@ -443,9 +472,6 @@ def seed(db: Session) -> None:
 
             for user in users_missing_passwords:
                 user.password_hash = hash_password(password)
-                user.failed_attempts = 0
-                user.locked_until = None
-                user.status = "ACTIVE"
 
             db.commit()
 
