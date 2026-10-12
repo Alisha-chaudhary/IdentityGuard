@@ -73,3 +73,10 @@ def can_approve_access(
 
     # A user cannot approve their own access request.
     return actor.id != target.id
+
+def can_access_platform(db: Session, user: User) -> bool:
+    """Return whether a user has any active IdentityGuard platform permission."""
+    return any(
+        permission.startswith("IdentityGuard:")
+        for permission in get_active_permissions(db, user)
+    )

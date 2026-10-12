@@ -2,6 +2,7 @@ from datetime import datetime
 from app.core.clock import FrozenClock, set_clock
 from app.db.models import Department, Role, User, UserRole
 from app.authz.service import (
+    can_access_platform,
     can_approve_access,
     can_assign_role,
     get_active_permissions,
@@ -303,3 +304,73 @@ def test_user_can_approve_another_users_access():
         actor=actor,
         target=target,
     ) is True
+
+def test_iam_administrator_can_access_platform(db):
+    department = Department(name="Platform Admin Security")
+    role = Role(
+        name="IAM Administrator",
+        description="IdentityGuard platform administrator",
+        is_privileged=True,
+    )
+    db.add_all([department, role])
+    db.flush()
+
+    user = User(
+        employee_id="PLAT001",
+        username="platform.admin",
+        full_name="Platform Admin",
+        email="platform.admin@example.test",
+        department_id=department.id,
+        status="ACTIVE",
+    )
+    db.add(user)
+    db.flush()
+
+    from app.db.models import Permission, Resource, RolePermission
+
+    resource = Resource(
+        name="IdentityGuard",
+        resource_type="APPLICATION",
+    )
+    db.add(resource)
+    db.flush()
+
+    permission = Permission(
+        resource_id=resource.id,
+        action="user.read",
+    )
+    db.add(permission)
+    db.flush()
+
+    db.add(RolePermission(role_id=role.id, permission_id=permission.id))
+    db.add(UserRole(user_id=user.id, role_id=role.id))
+    db.commit()
+
+    assert can_access_platform(db, user) is True
+
+
+def test_business_user_without_platform_permissions_is_denied(db):
+    department = Department(name="Business Operations")
+    role = Role(
+        name="Finance Analyst",
+        description="Business finance role",
+        is_privileged=False,
+    )
+    db.add_all([department, role])
+    db.flush()
+
+    user = User(
+        employee_id="PLAT002",
+        username="finance.user",
+        full_name="Finance User",
+        email="finance.user@example.test",
+        department_id=department.id,
+        status="ACTIVE",
+    )
+    db.add(user)
+    db.flush()
+
+    db.add(UserRole(user_id=user.id, role_id=role.id))
+    db.commit()
+
+    assert can_access_platform(db, user) is False

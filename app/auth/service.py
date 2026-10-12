@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.audit.events import EventType, Result
 from app.audit.service import new_correlation_id, record_event
+from app.authz.service import can_access_platform
 from app.core.security import create_access_token, verify_password
 from app.db.models import User
 
@@ -22,7 +23,7 @@ _DUMMY_PASSWORD_HASH = (
 
 class AuthenticationError(Exception):
     """Raised when authentication should fail with a generic message."""
-    
+
 
 def _utcnow() -> datetime:
     """Return naive UTC time for SQLite DateTime comparisons."""
@@ -141,6 +142,21 @@ def authenticate(
         db.commit()
         raise AuthenticationError("Invalid credentials")
 
+    # Valid credentials alone do not grant IdentityGuard access.
+    if not can_access_platform(db, user):
+        record_event(
+            db,
+            actor=username,
+            event_type=EventType.ACCESS_DENIED,
+            target="IdentityGuard:workspace",
+            action="login",
+            result=Result.DENIED,
+            reason="User lacks active IdentityGuard platform permissions",
+            correlation_id=correlation_id,
+        )
+        db.commit()
+        raise AuthenticationError("Invalid credentials")
+
     # Successful authentication resets the failed-attempt counter.
     user.failed_attempts = 0
     user.locked_until = None
@@ -153,7 +169,7 @@ def authenticate(
         target=f"user:{username}",
         action="login",
         result=Result.SUCCESS,
-        reason="Valid credentials",
+        reason="Valid credentials and authorized platform access",
         correlation_id=correlation_id,
     )
 
