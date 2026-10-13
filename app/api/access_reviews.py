@@ -1,4 +1,3 @@
-
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -16,6 +15,7 @@ from app.iam.access_reviews import (
     AccessReviewSelfReviewError,
     complete_access_review_cycle,
     create_access_review_cycle,
+    correct_access_review_reason,
     record_access_review_decision,
 )
 
@@ -32,6 +32,10 @@ class CreateAccessReviewRequest(BaseModel):
 class RecordReviewDecisionRequest(BaseModel):
     item_id: int
     decision: str
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class CorrectReviewReasonRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
@@ -152,11 +156,13 @@ def get_review(
     db: Session = Depends(get_db),
 ) -> AccessReviewCycle:
     cycle = db.get(AccessReviewCycle, cycle_id)
+
     if cycle is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Access review cycle {cycle_id} not found",
         )
+
     return cycle
 
 
@@ -180,6 +186,31 @@ def decide_review_item(
             reviewer=current_user,
             decision=request.decision,
             reason=request.reason,
+        )
+    except AccessReviewError as error:
+        raise _map_error(error) from error
+
+
+@router.patch(
+    "/{cycle_id}/items/{item_id}/reason",
+    response_model=AccessReviewItemResponse,
+)
+def correct_review_reason(
+    cycle_id: int,
+    item_id: int,
+    request: CorrectReviewReasonRequest,
+    current_user: User = Depends(
+        require_permission("IdentityGuard:access_review.correct")
+    ),
+    db: Session = Depends(get_db),
+) -> AccessReviewItem:
+    try:
+        return correct_access_review_reason(
+            db,
+            cycle_id=cycle_id,
+            item_id=item_id,
+            corrector=current_user,
+            new_reason=request.reason,
         )
     except AccessReviewError as error:
         raise _map_error(error) from error

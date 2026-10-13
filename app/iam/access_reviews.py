@@ -153,6 +153,16 @@ def record_access_review_decision(
         )
 
     if reviewer.id == item.user_id:
+        record_event(
+            db,
+            actor=reviewer.username,
+            event_type=EventType.ACCESS_DENIED,
+            target=f"access_review_item:{item.id}",
+            action="access_review_self_review",
+            result=Result.DENIED,
+            reason="Reviewer attempted to review their own role assignment",
+           )
+        db.commit()
         raise AccessReviewSelfReviewError(
             "Users cannot review their own role assignments"
         )
@@ -292,6 +302,109 @@ def complete_access_review_cycle(
         db.commit()
         db.refresh(cycle)
         return cycle
+
+    except Exception:
+        db.rollback()
+        raise
+
+def _fit_reason(text: str, limit: int = 500) -> str:
+    """Audit reasons are limited to 500 characters."""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
+def correct_access_review_reason(
+    db: Session,
+    *,
+    cycle_id: int,
+    item_id: int,
+    corrector: User,
+    new_reason: str,
+) -> AccessReviewItem:
+    """
+    Correct only the reason text of an existing decision.
+
+    The decision, reviewer and decision time are not changed. The previous
+    reason is preserved in a separate audit event, so each correction leaves
+    a record of what was replaced.
+    """
+    cycle = db.get(AccessReviewCycle, cycle_id)
+
+    if cycle is None:
+        raise AccessReviewNotFoundError(
+            f"Access review cycle {cycle_id} not found"
+        )
+
+    if cycle.status != "OPEN":
+        raise AccessReviewAlreadyCompletedError(
+            "Cannot correct an item in a completed review cycle"
+        )
+
+    item = db.get(AccessReviewItem, item_id)
+
+    if item is None or item.cycle_id != cycle_id:
+        raise AccessReviewNotFoundError(
+            f"Review item {item_id} not found in cycle {cycle_id}"
+        )
+
+    if item.decision == "PENDING":
+        raise AccessReviewDecisionError(
+            "This review item has no decision to correct"
+        )
+
+    if corrector.id == item.user_id:
+        record_event(
+            db,
+            actor=corrector.username,
+            event_type=EventType.ACCESS_DENIED,
+            target=f"access_review_item:{item.id}",
+            action="access_review_self_correction",
+            result=Result.DENIED,
+            reason=(
+                "User attempted to correct a decision about their own "
+                "role assignment"
+            ),
+        )
+        db.commit()
+
+        raise AccessReviewSelfReviewError(
+            "Users cannot correct decisions about their own role assignments"
+        )
+
+    new_reason = new_reason.strip()
+
+    if not new_reason:
+        raise AccessReviewInvalidError("A corrected reason is required")
+
+    if len(new_reason) > 500:
+        raise AccessReviewInvalidError(
+            "Decision reason cannot exceed 500 characters"
+        )
+
+    previous_reason = item.decision_reason or ""
+
+    if new_reason == previous_reason:
+        raise AccessReviewInvalidError(
+            "The corrected reason matches the current reason"
+        )
+
+    try:
+        item.decision_reason = new_reason
+
+        record_event(
+            db,
+            actor=corrector.username,
+            event_type=EventType.ACCESS_REVIEW_REASON_CORRECTED,
+            target=f"access_review_item:{item.id}",
+            action="correct_access_review_reason",
+            result=Result.SUCCESS,
+            reason=_fit_reason(f"Previous reason: {previous_reason}"),
+        )
+
+        db.commit()
+        db.refresh(item)
+        return item
 
     except Exception:
         db.rollback()
