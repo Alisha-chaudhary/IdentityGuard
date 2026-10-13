@@ -384,7 +384,7 @@ def _seed_platform_rbac(db: Session) -> None:
             [],
         ),
 
-                "Access Reviewer": (
+            "Access Reviewer": (
             "Reviews and decides access review items",
             False,
             [

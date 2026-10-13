@@ -1,5 +1,7 @@
-# Python virtual environment
+# Python virtual environments
 .venv/
+.venv*/
+venv/
 
 # Python cache
 __pycache__/
@@ -8,21 +10,30 @@ __pycache__/
 # Environment / secrets
 .env
 .env.*
+!.env.example
 
 # IDE
 .vscode/
 
-# Local database
+# Local databases and backups
 *.db
 *.sqlite
 *.sqlite3
 
-# Test / coverage
+# Test / coverage / tooling caches
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
 
-# Build artifacts
+# Frontend dependencies and build artifacts
+frontend/node_modules/
+frontend/dist/
+
+# General build artifacts
 build/
 dist/
 *.egg-info/
@@ -30,3 +41,7 @@ dist/
 # OS files
 .DS_Store
 Thumbs.db
+# Local Docker secrets and overrides
+.env.docker
+.env.compose
+compose.override.yaml
