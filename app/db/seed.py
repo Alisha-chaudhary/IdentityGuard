@@ -64,6 +64,7 @@ PERMISSIONS = [
     ("IdentityGuard", "access_review.create"),
     ("IdentityGuard", "access_review.view"),
     ("IdentityGuard", "access_review.decide"),
+    ("IdentityGuard", "access_review.correct"),
     ("IdentityGuard", "access_review.complete"),
     ("IdentityGuard", "pam.request"),
     ("IdentityGuard", "pam.approve"),
@@ -151,7 +152,9 @@ ROLES = {
             ("IdentityGuard", "access.provision"),
             ("IdentityGuard", "access_review.create"),
             ("IdentityGuard", "access_review.view"),
+            ("IdentityGuard", "access_review.decide"),
             ("IdentityGuard", "access_review.complete"),
+            ("IdentityGuard", "access_review.correct"),
             ("IdentityGuard", "pam.request"),
             ("IdentityGuard", "pam.approve"),
             ("IdentityGuard", "pam.checkout"),
@@ -173,6 +176,14 @@ ROLES = {
         "Performs approved user and role support operations",
         False,
         [],
+    ),
+        "Access Reviewer": (
+        "Reviews and decides access review items",
+        False,
+        [
+            ("IdentityGuard", "access_review.view"),
+            ("IdentityGuard", "access_review.decide"),
+        ],
     ),
 }
 
@@ -214,8 +225,8 @@ USERS = [
     ),
     (
         "EMP005",
-        "arjun.verma",
-        "Arjun Verma",
+        "lisa",
+        "Lisa C",
         "IT",
         None,
         ["System Administrator"],
@@ -225,13 +236,13 @@ USERS = [
         "kiran.reddy",
         "Kiran Reddy",
         "IT",
-        "arjun.verma",
+        "lisa",
         ["Database Administrator"],
     ),
     (
         "EMP007",
-        "alisha.c",
-        "Alisha C",
+        "arjun.verma",
+        "Arjun Verma",
         "Security",
         None,
         ["SOC Analyst"],
@@ -297,12 +308,14 @@ def _seed_platform_rbac(db: Session) -> None:
         "access_review.create": "Create access review cycles",
         "access_review.view": "View access review cycles",
         "access_review.decide": "Record access review decisions",
+        "access_review.correct": "Correct decision reasons in open access review cycles",
         "access_review.complete": "Complete access review cycles",
         "pam.request": "Submit privileged access requests",
         "pam.approve": "Approve or reject privileged access requests",
         "pam.checkout": "Check out approved privileged access",
         "pam.revoke": "Revoke active privileged access checkouts",
         "reports.read": "Read identity and governance reports",
+
     }
 
     permissions = {}
@@ -344,6 +357,8 @@ def _seed_platform_rbac(db: Session) -> None:
                 "access.provision",
                 "access_review.create",
                 "access_review.view",
+                "access_review.decide",
+                "access_review.correct",
                 "access_review.complete",
                 "pam.request",
                 "pam.approve",
@@ -367,6 +382,15 @@ def _seed_platform_rbac(db: Session) -> None:
             "Performs approved user and role support operations",
             False,
             [],
+        ),
+
+            "Access Reviewer": (
+            "Reviews and decides access review items",
+            False,
+            [
+                "access_review.view",
+                "access_review.decide",
+            ],
         ),
     }
 

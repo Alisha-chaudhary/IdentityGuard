@@ -47,7 +47,12 @@ def test_existing_seed_removes_only_obsolete_security_auditor_decision(
 
     assert auditor is not None
     assert iam_admin is not None
-    assert decide_permission is not None
+    # The cleanup must not remove this permission from IAM Administrator.
+    iam_permissions = _role_permissions(db, "IAM Administrator")
+    assert (
+        "IdentityGuard",
+        "access_review.decide",
+    ) in iam_permissions
 
     # Simulate the obsolete mapping found in an older seeded database.
     db.add(
@@ -74,7 +79,7 @@ def test_existing_seed_removes_only_obsolete_security_auditor_decision(
     assert (
         "IdentityGuard",
         "access_review.decide",
-    ) not in iam_permissions
+    ) in iam_permissions
 
 def test_existing_seed_removes_help_desk_platform_permissions(db):
     seed(db)
@@ -117,7 +122,7 @@ def test_seed_backfills_password_without_reactivating_disabled_user(db):
     seed(db)
 
     user = db.scalar(
-        select(User).where(User.username == "alisha.c")
+        select(User).where(User.username == "lisa")
     )
     assert user is not None
 
@@ -144,7 +149,7 @@ def test_seed_backfills_password_without_unlocking_locked_user(db):
     seed(db)
 
     user = db.scalar(
-        select(User).where(User.username == "alisha.c")
+        select(User).where(User.username == "lisa")
     )
     assert user is not None
 
@@ -171,7 +176,7 @@ def test_seed_does_not_reactivate_terminated_user(db):
     seed(db)
 
     user = db.scalar(
-        select(User).where(User.username == "alisha.c")
+        select(User).where(User.username == "lisa")
     )
     assert user is not None
 
@@ -192,3 +197,21 @@ def _as_naive_utc(value):
     if value is not None and value.tzinfo is not None:
         return value.astimezone(timezone.utc).replace(tzinfo=None)
     return value
+
+def test_access_reviewer_can_view_and_decide_only(db):
+    seed(db)
+
+    assert _role_permissions(db, "Access Reviewer") == {
+        ("IdentityGuard", "access_review.view"),
+        ("IdentityGuard", "access_review.decide"),
+    }
+
+
+def test_only_iam_administrator_can_correct_review_reasons(db):
+    seed(db)
+    correct = ("IdentityGuard", "access_review.correct")
+
+    assert correct in _role_permissions(db, "IAM Administrator")
+
+    for role_name in ("Access Reviewer", "Security Auditor", "Help Desk"):
+        assert correct not in _role_permissions(db, role_name)

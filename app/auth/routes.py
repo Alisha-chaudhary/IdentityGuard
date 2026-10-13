@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, get_db
 from app.auth.service import AuthenticationError, authenticate
 from app.db.models import User, UserRole
+from app.authz.service import get_active_permissions
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
@@ -59,4 +60,5 @@ def get_me(
         "department_id": current_user.department_id,
         "status": current_user.status,
         "roles": active_roles,
+        "permissions": sorted(get_active_permissions(db, current_user)),
     }

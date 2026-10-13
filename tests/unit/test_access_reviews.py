@@ -19,6 +19,7 @@ from app.iam.access_reviews import (
     AccessReviewSelfReviewError,
     create_access_review_cycle,
     record_access_review_decision,
+    correct_access_review_reason,
     complete_access_review_cycle,
     AccessReviewNotFoundError,
 )
@@ -496,3 +497,190 @@ def test_stale_review_does_not_revoke_reassigned_role(db):
     assert current is not None
     assert current.assigned_at == replacement.assigned_at
     assert cycle.status == "OPEN"
+
+def make_decided_item(db, *, decided=True, reason="Original reason"):
+    department = create_department(db)
+    creator = create_user(db, department, "creator", "CR001")
+    target = create_user(db, department, "target", "CR002")
+    reviewer = create_user(db, department, "reviewer", "CR003")
+    corrector = create_user(db, department, "corrector", "CR004")
+    role = create_role(db)
+
+    db.add(UserRole(user_id=target.id, role_id=role.id))
+    db.commit()
+
+    cycle = create_access_review_cycle(
+        db, creator=creator, name="Correction Review"
+    )
+    item = db.query(AccessReviewItem).filter_by(cycle_id=cycle.id).one()
+
+    if decided:
+        record_access_review_decision(
+            db,
+            cycle_id=cycle.id,
+            item_id=item.id,
+            reviewer=reviewer,
+            decision="RETAIN",
+            reason=reason,
+        )
+
+    return {
+        "cycle": cycle,
+        "item": item,
+        "creator": creator,
+        "target": target,
+        "reviewer": reviewer,
+        "corrector": corrector,
+    }
+
+
+def test_correct_reason_preserves_decision_and_audits_previous_reason(db):
+    ctx = make_decided_item(db)
+    item = ctx["item"]
+    original_decided_at = item.decided_at
+
+    result = correct_access_review_reason(
+        db,
+        cycle_id=ctx["cycle"].id,
+        item_id=item.id,
+        corrector=ctx["corrector"],
+        new_reason="Corrected reason",
+    )
+
+    assert result.decision_reason == "Corrected reason"
+    assert result.decision == "RETAIN"
+    assert result.reviewer_id == ctx["reviewer"].id
+    assert result.decided_at == original_decided_at
+
+    event = (
+        db.query(AuditEvent)
+        .filter_by(event_type=EventType.ACCESS_REVIEW_REASON_CORRECTED)
+        .one()
+    )
+    assert event.actor == ctx["corrector"].username
+    assert event.result == "SUCCESS"
+    assert "Original reason" in event.reason
+
+
+def test_correct_reason_rejects_pending_item(db):
+    ctx = make_decided_item(db, decided=False)
+
+    with pytest.raises(AccessReviewDecisionError):
+        correct_access_review_reason(
+            db,
+            cycle_id=ctx["cycle"].id,
+            item_id=ctx["item"].id,
+            corrector=ctx["corrector"],
+            new_reason="Too early",
+        )
+
+
+def test_correct_reason_rejects_completed_cycle(db):
+    ctx = make_decided_item(db)
+    complete_access_review_cycle(
+        db, cycle_id=ctx["cycle"].id, actor=ctx["creator"]
+    )
+
+    with pytest.raises(AccessReviewAlreadyCompletedError):
+        correct_access_review_reason(
+            db,
+            cycle_id=ctx["cycle"].id,
+            item_id=ctx["item"].id,
+            corrector=ctx["corrector"],
+            new_reason="Too late",
+        )
+
+
+@pytest.mark.parametrize("bad_reason", ["   ", "x" * 501])
+def test_correct_reason_rejects_blank_and_overlong_reason(db, bad_reason):
+    ctx = make_decided_item(db)
+
+    with pytest.raises(AccessReviewInvalidError):
+        correct_access_review_reason(
+            db,
+            cycle_id=ctx["cycle"].id,
+            item_id=ctx["item"].id,
+            corrector=ctx["corrector"],
+            new_reason=bad_reason,
+        )
+
+
+def test_correct_reason_rejects_unchanged_reason(db):
+    ctx = make_decided_item(db)
+
+    with pytest.raises(AccessReviewInvalidError, match="matches"):
+        correct_access_review_reason(
+            db,
+            cycle_id=ctx["cycle"].id,
+            item_id=ctx["item"].id,
+            corrector=ctx["corrector"],
+            new_reason="Original reason",
+        )
+
+
+def test_correct_reason_blocks_self_and_audits_denial(db):
+    ctx = make_decided_item(db)
+
+    with pytest.raises(AccessReviewSelfReviewError):
+        correct_access_review_reason(
+            db,
+            cycle_id=ctx["cycle"].id,
+            item_id=ctx["item"].id,
+            corrector=ctx["target"],
+            new_reason="Changing my own review",
+        )
+
+    event = (
+        db.query(AuditEvent)
+        .filter_by(event_type=EventType.ACCESS_DENIED)
+        .one()
+    )
+    assert event.result == "DENIED"
+    assert event.action == "access_review_self_correction"
+
+
+def test_correct_reason_rolls_back_if_audit_fails(db, monkeypatch):
+    ctx = make_decided_item(db)
+    item = ctx["item"]
+
+    def failing_record_event(*args, **kwargs):
+        raise RuntimeError("audit failure")
+
+    monkeypatch.setattr(
+        "app.iam.access_reviews.record_event", failing_record_event
+    )
+
+    with pytest.raises(RuntimeError):
+        correct_access_review_reason(
+            db,
+            cycle_id=ctx["cycle"].id,
+            item_id=item.id,
+            corrector=ctx["corrector"],
+            new_reason="Corrected reason",
+        )
+
+    db.refresh(item)
+    assert item.decision_reason == "Original reason"
+
+
+def test_self_review_attempt_is_audited_as_denied(db):
+    ctx = make_decided_item(db, decided=False)
+
+    with pytest.raises(AccessReviewSelfReviewError):
+        record_access_review_decision(
+            db,
+            cycle_id=ctx["cycle"].id,
+            item_id=ctx["item"].id,
+            reviewer=ctx["target"],
+            decision="RETAIN",
+            reason="I need this access",
+        )
+
+    event = (
+        db.query(AuditEvent)
+        .filter_by(event_type=EventType.ACCESS_DENIED)
+        .one()
+    )
+    assert event.actor == ctx["target"].username
+    assert event.result == "DENIED"
+    assert event.action == "access_review_self_review"

@@ -67,6 +67,7 @@ def review_api_setup(db):
         "access_review.create",
         "access_review.view",
         "access_review.decide",
+        "access_review.correct",
         "access_review.complete",
     ]
     permissions = {}
@@ -99,6 +100,7 @@ def review_api_setup(db):
     for action in [
         "access_review.create",
         "access_review.view",
+        "access_review.correct",
         "access_review.complete",
     ]:
         db.add(
@@ -335,3 +337,86 @@ def test_cannot_complete_cycle_without_permission(
     response = client.post(f"/access-reviews/{created['id']}/complete")
 
     assert response.status_code == 403
+
+def decide_target_item(client, setup, cycle_id):
+    detail = client.get(f"/access-reviews/{cycle_id}").json()
+    item = next(
+        i for i in detail["items"] if i["user_id"] == setup["target"].id
+    )
+    client.current_user["user"] = setup["reviewer1"]
+    response = client.post(
+        f"/access-reviews/{cycle_id}/decisions",
+        json={
+            "item_id": item["id"],
+            "decision": "RETAIN",
+            "reason": "Original reason",
+        },
+    )
+    assert response.status_code == 200
+    client.current_user["user"] = setup["admin"]
+    return item["id"]
+
+
+def test_correct_reason_through_api(client, review_api_setup):
+    created = create_cycle(client)
+    item_id = decide_target_item(client, review_api_setup, created["id"])
+
+    response = client.patch(
+        f"/access-reviews/{created['id']}/items/{item_id}/reason",
+        json={"reason": "Corrected reason"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["decision_reason"] == "Corrected reason"
+    assert body["decision"] == "RETAIN"
+    assert body["reviewer_id"] == review_api_setup["reviewer1"].id
+
+
+def test_correct_reason_requires_permission(client, review_api_setup):
+    created = create_cycle(client)
+    item_id = decide_target_item(client, review_api_setup, created["id"])
+
+    client.current_user["user"] = review_api_setup["reviewer1"]
+    response = client.patch(
+        f"/access-reviews/{created['id']}/items/{item_id}/reason",
+        json={"reason": "Corrected reason"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_correct_reason_rejects_pending_item(client, review_api_setup):
+    created = create_cycle(client)
+    detail = client.get(f"/access-reviews/{created['id']}").json()
+    item_id = detail["items"][0]["id"]
+
+    response = client.patch(
+        f"/access-reviews/{created['id']}/items/{item_id}/reason",
+        json={"reason": "Corrected reason"},
+    )
+
+    assert response.status_code == 409
+
+
+def test_correct_reason_rejects_blank_reason(client, review_api_setup):
+    created = create_cycle(client)
+    item_id = decide_target_item(client, review_api_setup, created["id"])
+
+    response = client.patch(
+        f"/access-reviews/{created['id']}/items/{item_id}/reason",
+        json={"reason": "   "},
+    )
+
+    assert response.status_code == 422
+
+
+def test_correct_reason_unknown_item_returns_404(client, review_api_setup):
+    created = create_cycle(client)
+
+    response = client.patch(
+        f"/access-reviews/{created['id']}/items/9999/reason",
+        json={"reason": "Corrected reason"},
+    )
+
+    assert response.status_code == 404
