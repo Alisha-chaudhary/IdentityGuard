@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -10,13 +10,18 @@ router = APIRouter(prefix="/audit", tags=["audit"])
 
 @router.get("/events")
 def list_audit_events(
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     current_user: User = Depends(
         require_permission("IdentityGuard:audit.read")
     ),
     db: Session = Depends(get_db),
 ) -> list[dict]:
     events = db.scalars(
-        select(AuditEvent).order_by(AuditEvent.id.desc())
+        select(AuditEvent)
+        .order_by(AuditEvent.id.desc())
+        .limit(limit)
+        .offset(offset)
     ).all()
 
     return [

@@ -15,6 +15,8 @@ from app.pam.service import (
     PamValidationError,
     checkout_privileged_access,
     decide_privileged_access,
+    end_privileged_checkout,
+    expire_due_checkouts,
     request_privileged_access,
     revoke_privileged_checkout,
 )
@@ -183,3 +185,37 @@ def revoke_pam_checkout(
         )
     except PamServiceError as error:
         raise _map_error(error) from error
+
+@router.post(
+    "/checkouts/{checkout_id}/end",
+    response_model=PamCheckoutResponse,
+)
+def end_pam_checkout(
+    checkout_id: int,
+    current_user: User = Depends(
+        require_permission("IdentityGuard:pam.checkout")
+    ),
+    db: Session = Depends(get_db),
+) -> PamCheckout:
+    try:
+        return end_privileged_checkout(
+            db,
+            checkout_id=checkout_id,
+            user_id=current_user.id,
+        )
+    except PamServiceError as error:
+        raise _map_error(error) from error
+
+
+@router.post(
+    "/checkouts/expire-due",
+    response_model=list[PamCheckoutResponse],
+)
+def expire_due_pam_checkouts(
+    current_user: User = Depends(
+        require_permission("IdentityGuard:pam.revoke")
+    ),
+    db: Session = Depends(get_db),
+) -> list[PamCheckout]:
+    """Run the expiry sweep now (a background task also runs it)."""
+    return expire_due_checkouts(db)

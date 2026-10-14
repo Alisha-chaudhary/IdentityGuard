@@ -53,6 +53,8 @@ PERMISSIONS = [
 
     # IdentityGuard platform permissions
     ("IdentityGuard", "user.create"),
+    ("IdentityGuard", "user.move"),
+    ("IdentityGuard", "user.terminate"),
     ("IdentityGuard", "user.read"),
     ("IdentityGuard", "role.assign"),
     ("IdentityGuard", "role.assign_privileged"),
@@ -142,6 +144,8 @@ ROLES = {
         True,
         [
             ("IdentityGuard", "user.create"),
+            ("IdentityGuard", "user.move"),
+            ("IdentityGuard", "user.terminate"),
             ("IdentityGuard", "user.read"),
             ("IdentityGuard", "role.assign"),
             ("IdentityGuard", "role.assign_privileged"),
@@ -297,6 +301,8 @@ def _seed_platform_rbac(db: Session) -> None:
     # ---------------------------------------------------------
     platform_permissions = {
         "user.create": "Create new users",
+        "user.move": "Move users between departments or managers",
+        "user.terminate": "Terminate users (JML leaver)",
         "user.read": "Read user information",
         "role.assign": "Assign non-privileged roles",
         "role.assign_privileged": "Assign privileged roles",
@@ -347,6 +353,8 @@ def _seed_platform_rbac(db: Session) -> None:
             True,
             [
                 "user.create",
+                "user.move",
+                "user.terminate",
                 "user.read",
                 "role.assign",
                 "role.assign_privileged",
@@ -462,6 +470,135 @@ def _seed_platform_rbac(db: Session) -> None:
         if obsolete_mapping is not None:
             db.delete(obsolete_mapping)
 
+
+    db.commit()
+
+
+# ---------------------------------------------------------------------
+# Demo platform identities (needed so a fresh clone can actually log in)
+# ---------------------------------------------------------------------
+
+# (employee_id, username, full_name, department, [roles])
+DEMO_PLATFORM_USERS = [
+    ("ADM001", "identityguard.admin", "IdentityGuard Admin", "Security", ["IAM Administrator"]),
+    ("ADM002", "identityguard.admin2", "IdentityGuard Admin Two", "Security", ["IAM Administrator"]),
+    ("AUD001", "auditor", "Security Auditor", "Security", ["Security Auditor"]),
+    ("REV001", "reviewer", "Access Reviewer", "Security", ["Access Reviewer"]),
+]
+
+# Users who may request/check out privileged access (approval is done by an admin).
+PAM_OPERATOR_ROLE = "PAM Operator"
+PAM_OPERATOR_PERMISSIONS = ["pam.request", "pam.checkout"]
+PAM_OPERATOR_USERNAMES = ["lisa", "kiran.reddy"]
+
+# (safe name, [(account name, system, type)])
+DEMO_PAM_SAFES = [
+    (
+        "Production Servers",
+        [
+            ("root-PROD-LINUX-01", "PROD-LINUX-01", "SYSTEM_ADMIN"),
+            ("administrator-PROD-WIN-01", "PROD-WIN-01", "SYSTEM_ADMIN"),
+        ],
+    ),
+    (
+        "Production Databases",
+        [("dba-PROD-DB-01", "PROD-DB-01", "DATABASE_ADMIN")],
+    ),
+]
+
+
+def seed_demo_platform(db: Session, password: str) -> None:
+    """Idempotently add the identities and PAM data the demo needs.
+
+    - two IAM administrators (needed for four-eyes: approver != provisioner),
+      an auditor and an access reviewer, all with platform permissions;
+    - a 'PAM Operator' role (pam.request + pam.checkout) for lisa/kiran;
+    - two PAM safes with accounts. No credentials are stored: PAM here is a
+      simulated request / approve / checkout / expire workflow.
+    Run after seed(); safe to run repeatedly.
+    """
+    from app.pam.models import PamAccount, PamSafe
+
+    check_password_strength(password)
+    resource = db.scalar(select(Resource).where(Resource.name == "IdentityGuard"))
+    if resource is None:
+        raise RuntimeError("Run seed(db) before seed_demo_platform(db).")
+
+    for emp_id, username, full_name, dept_name, role_names in DEMO_PLATFORM_USERS:
+        if db.scalar(select(User).where(User.username == username)):
+            continue
+        department = db.scalar(select(Department).where(Department.name == dept_name))
+        user = User(
+            employee_id=emp_id,
+            username=username,
+            full_name=full_name,
+            email=f"{username}@example.test",
+            department_id=department.id,
+            password_hash=hash_password(password),
+            status="ACTIVE",
+            failed_attempts=0,
+        )
+        db.add(user)
+        db.flush()
+        for role_name in role_names:
+            role = db.scalar(select(Role).where(Role.name == role_name))
+            db.add(UserRole(user_id=user.id, role_id=role.id))
+
+    operator = db.scalar(select(Role).where(Role.name == PAM_OPERATOR_ROLE))
+    if operator is None:
+        operator = Role(
+            name=PAM_OPERATOR_ROLE,
+            description="Can request and check out approved privileged access",
+            is_privileged=False,
+        )
+        db.add(operator)
+        db.flush()
+    for action in PAM_OPERATOR_PERMISSIONS:
+        permission = db.scalar(
+            select(Permission).where(
+                Permission.resource_id == resource.id,
+                Permission.action == action,
+            )
+        )
+        if db.scalar(
+            select(RolePermission).where(
+                RolePermission.role_id == operator.id,
+                RolePermission.permission_id == permission.id,
+            )
+        ) is None:
+            db.add(RolePermission(role_id=operator.id, permission_id=permission.id))
+
+    for username in PAM_OPERATOR_USERNAMES:
+        user = db.scalar(select(User).where(User.username == username))
+        if user is not None and db.scalar(
+            select(UserRole).where(
+                UserRole.user_id == user.id, UserRole.role_id == operator.id
+            )
+        ) is None:
+            db.add(UserRole(user_id=user.id, role_id=operator.id))
+
+    for safe_name, accounts in DEMO_PAM_SAFES:
+        safe = db.scalar(select(PamSafe).where(PamSafe.name == safe_name))
+        if safe is None:
+            safe = PamSafe(name=safe_name, description="Demo safe", status="ACTIVE")
+            db.add(safe)
+            db.flush()
+        for name, system, account_type in accounts:
+            if db.scalar(
+                select(PamAccount).where(
+                    PamAccount.safe_id == safe.id, PamAccount.name == name
+                )
+            ) is None:
+                db.add(
+                    PamAccount(
+                        safe_id=safe.id,
+                        name=name,
+                        system_name=system,
+                        account_type=account_type,
+                        description="Demo privileged account (no stored credential)",
+                        status="ACTIVE",
+                    )
+                )
 
     db.commit()
 
@@ -620,10 +757,20 @@ def seed(db: Session) -> None:
 if __name__ == "__main__":
     init_db()
 
+    # One password for every demo identity. Use IDENTITYGUARD_SEED_PASSWORD
+    # to choose it, otherwise a random one is generated and printed once.
+    _password, _generated = _get_seed_password()
+    os.environ["IDENTITYGUARD_SEED_PASSWORD"] = _password
+
     with SessionLocal() as session:
         seed(session)
+        seed_demo_platform(session, _password)
 
         print("Seed complete.")
+        print("Demo logins: identityguard.admin, identityguard.admin2, "
+              "auditor, reviewer, priya.nair, rahul.mehta, lisa, kiran.reddy ...")
+        if _generated:
+            print("Shared development password:", _password)
         print(
             "users:",
             session.scalar(select(func.count()).select_from(User)),

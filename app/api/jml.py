@@ -4,10 +4,13 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_permission
 from app.db.models import User
+from app.core.security import WeakPasswordError
 from app.iam.jml import (
     DepartmentNotFoundError,
     InvalidManagerError,
+    LastAdministratorError,
     ManagerNotFoundError,
+    SelfTerminationError,
     UserAlreadyExistsError,
     UserNotFoundError,
     create_user,
@@ -73,6 +76,11 @@ def create_jml_user(
             manager_id=request.manager_id,
             actor=current_user.username,
         )
+    except WeakPasswordError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
     except UserAlreadyExistsError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -100,7 +108,7 @@ def move_jml_user(
     user_id: int,
     request: MoveUserRequest,
     current_user: User = Depends(
-        require_permission("IdentityGuard:user.create")
+        require_permission("IdentityGuard:user.move")
     ),
     db: Session = Depends(get_db),
 ) -> User:
@@ -152,7 +160,7 @@ def move_jml_user(
 def terminate_jml_user(
     user_id: int,
     current_user: User = Depends(
-        require_permission("IdentityGuard:user.create")
+        require_permission("IdentityGuard:user.terminate")
     ),
     db: Session = Depends(get_db),
 ) -> User:
@@ -165,6 +173,11 @@ def terminate_jml_user(
     except UserNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        )
+    except (SelfTerminationError, LastAdministratorError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
         )
 

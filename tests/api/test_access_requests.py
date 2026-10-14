@@ -46,7 +46,16 @@ def api_setup(db):
         status="ACTIVE",
     )
 
-    db.add_all([requester, approver, target])
+    second_admin = User(
+        employee_id="EMP004",
+        username="second.admin",
+        full_name="Second Admin",
+        email="second.admin@example.test",
+        department_id=department.id,
+        status="ACTIVE",
+    )
+
+    db.add_all([requester, approver, target, second_admin])
     db.flush()
 
     resource = Resource(
@@ -63,6 +72,7 @@ def api_setup(db):
         "access.request",
         "access.approve",
         "access.provision",
+        "role.assign_privileged",
     ]:
         permission = Permission(
             resource_id=resource.id,
@@ -98,6 +108,7 @@ def api_setup(db):
     for action in [
         "access.approve",
         "access.provision",
+        "role.assign_privileged",
     ]:
         db.add(
             RolePermission(
@@ -120,9 +131,12 @@ def api_setup(db):
         )
     )
 
+    db.add(UserRole(user_id=second_admin.id, role_id=approver_role.id))
+
     db.commit()
 
     return {
+        "second_admin": second_admin,
         "requester": requester,
         "approver": approver,
         "target": target,
@@ -359,6 +373,9 @@ def test_approved_request_can_be_provisioned(
     )
 
     assert approve_response.status_code == 200
+
+    # Privileged role: a different administrator must provision (four-eyes).
+    client.current_user["user"] = api_setup["second_admin"]
 
     response = client.post(
         f"/access-requests/{request_id}/provision",

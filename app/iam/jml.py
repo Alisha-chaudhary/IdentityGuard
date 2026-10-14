@@ -2,12 +2,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.clock import now
-from app.db.models import UserRole
-from app.db.models import Department, User
 from app.audit.events import EventType, Result
 from app.audit.service import record_event
-from app.core.security import hash_password
+from app.authz.service import get_active_permissions
+from app.core.clock import now
+from app.core.security import check_password_strength, hash_password
+from app.db.models import AccessRequest, Department, User, UserRole
+from app.pam.service import revoke_all_for_user
 
 
 class JMLError(Exception):
@@ -34,6 +35,17 @@ class InvalidManagerError(JMLError):
     """Raised when an invalid manager relationship is requested."""
 
 
+class SelfTerminationError(JMLError):
+    """Raised when an administrator tries to terminate their own account."""
+
+
+class LastAdministratorError(JMLError):
+    """Raised when terminating the last user able to administer privileged access."""
+
+
+ADMIN_PERMISSION = "IdentityGuard:role.assign_privileged"
+
+
 def create_user(
     db: Session,
     *,
@@ -47,6 +59,9 @@ def create_user(
     actor: str,
 ) -> User:
     """Create an active user and record the JML joiner event."""
+
+    # Enforce the password policy (raises WeakPasswordError, a ValueError).
+    check_password_strength(password, username)
 
     existing_user = db.scalar(
         select(User).where(
@@ -190,6 +205,19 @@ def move_user(
     if changes:
         reason = "JML mover updated " + ", ".join(changes)
 
+        if department_id is not None and department_id != old_department_id:
+            # Movers keep their existing roles; the compensating control is
+            # the access review. Make that visible in the audit trail.
+            retained = [
+                a for a in user.user_roles
+                if a.expires_at is None or a.expires_at > now()
+            ]
+            if retained:
+                reason += (
+                    f"; {len(retained)} active role(s) retained pending "
+                    "access review"
+                )
+
         record_event(
             db,
             actor=actor,
@@ -220,6 +248,28 @@ def terminate_user(
             f"User {user_id} does not exist."
         )
 
+    if user.username == actor:
+        raise SelfTerminationError(
+            "Administrators cannot terminate their own account."
+        )
+
+    if user.status == "ACTIVE" and ADMIN_PERMISSION in get_active_permissions(
+        db, user
+    ):
+        other_admins = [
+            other
+            for other in db.scalars(
+                select(User).where(
+                    User.status == "ACTIVE", User.id != user.id
+                )
+            ).all()
+            if ADMIN_PERMISSION in get_active_permissions(db, other)
+        ]
+        if not other_admins:
+            raise LastAdministratorError(
+                "Cannot terminate the last active privileged administrator."
+            )
+
     termination_time = now()
 
     user.status = "TERMINATED"
@@ -236,6 +286,36 @@ def terminate_user(
     for assignment in active_role_assignments:
         assignment.expires_at = termination_time
 
+    # Leaver clean-up: close anything that could still act for this user.
+    pam = revoke_all_for_user(
+        db,
+        user_id=user.id,
+        actor=actor,
+        reason="JML leaver: user terminated",
+    )
+
+    open_requests = db.scalars(
+        select(AccessRequest).where(
+            AccessRequest.status.in_(("REQUESTED", "APPROVED")),
+            (AccessRequest.requester_id == user.id)
+            | (AccessRequest.target_user_id == user.id),
+        )
+    ).all()
+    for access_request in open_requests:
+        access_request.status = "REJECTED"
+        access_request.decision_by = "system"
+        access_request.decision_reason = "Auto-rejected: JML leaver terminated"
+        access_request.decided_at = termination_time
+        record_event(
+            db,
+            actor=actor,
+            event_type=EventType.ACCESS_REJECTED,
+            target=str(access_request.id),
+            action="auto_reject_on_termination",
+            result=Result.SUCCESS,
+            reason=f"Open request closed because {user.username} was terminated",
+        )
+
     record_event(
         db,
         actor=actor,
@@ -243,7 +323,12 @@ def terminate_user(
         target=user.username,
         action="terminate_user",
         result=Result.SUCCESS,
-        reason="JML leaver terminated user account and expired active role assignments",
+        reason=(
+            "JML leaver terminated user account and expired active role "
+            f"assignments; revoked {pam['revoked_checkouts']} PAM checkout(s), "
+            f"cancelled {pam['cancelled_requests']} PAM request(s), "
+            f"closed {len(open_requests)} access request(s)"
+        ),
     )
 
     db.commit()

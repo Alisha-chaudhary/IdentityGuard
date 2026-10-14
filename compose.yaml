@@ -1,4 +1,4 @@
-﻿services:
+services:
   backend:
     build:
       context: .
@@ -8,6 +8,9 @@
     environment:
       IDENTITYGUARD_DATABASE_URL: sqlite:////data/identityguard.db
       IDENTITYGUARD_JWT_SECRET: ${IDENTITYGUARD_JWT_SECRET:?Set IDENTITYGUARD_JWT_SECRET in your environment}
+      # First start: create tables and load demo identities/PAM data.
+      IDENTITYGUARD_AUTO_SEED: "true"
+      IDENTITYGUARD_SEED_PASSWORD: ${IDENTITYGUARD_SEED_PASSWORD:?Set IDENTITYGUARD_SEED_PASSWORD (min 12 chars, upper, lower, digit)}
     volumes:
       - identityguard_data:/data
     restart: unless-stopped

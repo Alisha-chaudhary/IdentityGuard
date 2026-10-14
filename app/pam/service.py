@@ -1,11 +1,12 @@
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.audit.events import EventType, Result
 from app.audit.service import record_event
+from app.core.clock import now as clock_now
 from app.db.models import User
 from app.pam.models import (
     PamAccessRequest,
@@ -35,7 +36,12 @@ class PamAuthorizationError(PamServiceError):
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    """Application time (naive UTC) from the injectable clock.
+
+    Using the shared clock (instead of datetime.now) lets tests freeze or
+    advance time and keeps PAM consistent with RBAC/role-expiry logic.
+    """
+    return clock_now()
 
 
 def _require_active_user(db: Session, user_id: int) -> User:
@@ -311,3 +317,132 @@ def revoke_privileged_checkout(
     except Exception:
         db.rollback()
         raise
+
+
+def end_privileged_checkout(
+    db: Session,
+    *,
+    checkout_id: int,
+    user_id: int,
+) -> PamCheckout:
+    """Let the user who holds an active checkout end it early (check-in)."""
+    user = _require_active_user(db, user_id)
+
+    checkout = db.get(PamCheckout, checkout_id)
+    if checkout is None:
+        raise PamNotFoundError("PAM checkout not found.")
+
+    if checkout.checked_out_by_id != user.id:
+        raise PamAuthorizationError(
+            "Only the user who checked out the access can end it."
+        )
+
+    if checkout.status != "ACTIVE":
+        raise PamAuthorizationError("Only active checkouts can be ended.")
+
+    try:
+        checkout.status = "ENDED"
+        checkout.ended_at = _utcnow()
+        db.flush()
+        record_event(
+            db,
+            actor=user.username,
+            event_type=EventType.PRIVILEGED_SESSION_ENDED,
+            target=f"pam_checkout:{checkout.id}",
+            action="END_PRIVILEGED_CHECKOUT",
+            result=Result.SUCCESS,
+            reason="Checkout ended early by its holder",
+        )
+        db.commit()
+        db.refresh(checkout)
+        return checkout
+    except Exception:
+        db.rollback()
+        raise
+
+
+def expire_due_checkouts(db: Session) -> list[PamCheckout]:
+    """Move every ACTIVE checkout whose time limit has passed to EXPIRED.
+
+    This is what makes the checkout genuinely time-bound: it is run by a
+    background sweeper (app.main) and can be triggered on demand through
+    POST /pam/checkouts/expire-due. Each expiry writes a PRIVILEGE_EXPIRED
+    audit event in the same transaction as the status change.
+    """
+    current_time = _utcnow()
+
+    overdue = db.scalars(
+        select(PamCheckout).where(
+            PamCheckout.status == "ACTIVE",
+            PamCheckout.expires_at <= current_time,
+        )
+    ).all()
+
+    try:
+        for checkout in overdue:
+            checkout.status = "EXPIRED"
+            checkout.ended_at = current_time
+            record_event(
+                db,
+                actor="system",
+                event_type=EventType.PRIVILEGE_EXPIRED,
+                target=f"pam_checkout:{checkout.id}",
+                action="EXPIRE_PRIVILEGED_CHECKOUT",
+                result=Result.SUCCESS,
+                reason="Checkout time limit reached",
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    return list(overdue)
+
+
+def revoke_all_for_user(
+    db: Session,
+    *,
+    user_id: int,
+    actor: str,
+    reason: str,
+) -> dict[str, int]:
+    """Leaver clean-up: revoke the user's active checkouts and close their
+    open PAM requests. Does NOT commit; the caller owns the transaction."""
+    current_time = _utcnow()
+
+    checkouts = db.scalars(
+        select(PamCheckout).where(
+            PamCheckout.checked_out_by_id == user_id,
+            PamCheckout.status == "ACTIVE",
+        )
+    ).all()
+    for checkout in checkouts:
+        checkout.status = "REVOKED"
+        checkout.ended_at = current_time
+        record_event(
+            db,
+            actor=actor,
+            event_type=EventType.PRIVILEGED_CHECKOUT_REVOKED,
+            target=f"pam_checkout:{checkout.id}",
+            action="REVOKE_PRIVILEGED_CHECKOUT",
+            result=Result.SUCCESS,
+            reason=reason,
+        )
+
+    open_requests = db.scalars(
+        select(PamAccessRequest).where(
+            PamAccessRequest.requester_id == user_id,
+            PamAccessRequest.status.in_(("REQUESTED", "APPROVED")),
+        )
+    ).all()
+    cancelled = 0
+    for request in open_requests:
+        # An APPROVED request that was already checked out is finished work.
+        if request.status == "APPROVED" and request.checkout is not None:
+            continue
+        request.status = "CANCELLED"
+        request.decision_reason = reason
+        request.decided_at = current_time
+        cancelled += 1
+
+    return {"revoked_checkouts": len(checkouts), "cancelled_requests": cancelled}

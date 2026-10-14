@@ -8,6 +8,7 @@ from app.api.deps import get_db, require_permission
 from app.db.models import User
 from app.reports.identity_inventory import get_identity_inventory
 from app.reports.audit_trail import get_audit_trail
+from app.reports.sod_violations import get_sod_violations
 from app.reports.pam_activity import get_pam_activity_report
 from app.reports.role_access_assignment import (
     get_role_access_assignments,
@@ -275,3 +276,13 @@ def access_review_summary_report(
     db: Session = Depends(get_db),
 ) -> dict:
     return get_access_review_summary(db)
+
+@router.get("/sod-violations")
+def sod_violations_report(
+    current_user: User = Depends(
+        require_permission("IdentityGuard:reports.read")
+    ),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Existing segregation-of-duties conflicts among active users."""
+    return get_sod_violations(db)
