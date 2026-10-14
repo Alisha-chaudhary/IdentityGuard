@@ -1,0 +1,47 @@
+pipeline {
+    agent any
+
+    environment {
+        APP_NAME = "identityguard"
+        IMAGE_NAME = "identityguard:ci"
+    }
+
+    stages {
+        stage("Checkout") {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage("Install Dependencies") {
+            steps {
+                sh "python -m pip install -r requirements-dev.txt"
+            }
+        }
+
+        stage("Run Backend Tests") {
+            steps {
+                sh "python -m pytest -q"
+            }
+        }
+
+        stage("Build Container") {
+            steps {
+                sh "docker build -f deploy/docker/Dockerfile.multistage -t ${IMAGE_NAME} ."
+            }
+        }
+
+        stage("Deployment Reference") {
+            steps {
+                echo "This stage is documentation-only unless a cluster target is configured."
+                echo "Manifests are provided under deploy/kubernetes."
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "IdentityGuard pipeline completed."
+        }
+    }
+}

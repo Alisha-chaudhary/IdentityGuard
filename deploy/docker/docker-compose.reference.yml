@@ -1,0 +1,20 @@
+# Reference compose file for the multi-stage image.
+# It mirrors the existing service without changing the original compose.yaml.
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.multistage
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      IDENTITYGUARD_DATABASE_URL: sqlite:////data/identityguard.db
+      IDENTITYGUARD_JWT_SECRET: ${IDENTITYGUARD_JWT_SECRET:?Set IDENTITYGUARD_JWT_SECRET}
+      IDENTITYGUARD_AUTO_SEED: "true"
+      IDENTITYGUARD_SEED_PASSWORD: ${IDENTITYGUARD_SEED_PASSWORD:?Set IDENTITYGUARD_SEED_PASSWORD (min 12 chars)}
+    volumes:
+      - identityguard_data:/data
+    restart: unless-stopped
+
+volumes:
+  identityguard_data:

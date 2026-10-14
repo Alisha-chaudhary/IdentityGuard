@@ -1,0 +1,56 @@
+# Reference Kubernetes Deployment.
+# The default image name assumes a local image loaded into the cluster.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: identityguard-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: identityguard-backend
+  template:
+    metadata:
+      labels:
+        app: identityguard-backend
+    spec:
+      containers:
+        - name: identityguard-backend
+          image: identityguard:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: IDENTITYGUARD_DATABASE_URL
+              value: "sqlite:////data/identityguard.db"
+            - name: IDENTITYGUARD_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: identityguard-secret
+                  key: jwt-secret
+            - name: IDENTITYGUARD_SEED_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: identityguard-secret
+                  key: seed-password
+            - name: IDENTITYGUARD_AUTO_SEED
+              value: "true"
+          volumeMounts:
+            - name: identityguard-data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: identityguard-data
+          persistentVolumeClaim:
+            claimName: identityguard-data-pvc
