@@ -85,26 +85,28 @@ def create_permission(db):
     db.add(resource)
     db.flush()
 
-    permission = Permission(
-        resource_id=resource.id,
-        action="user.create",
-    )
+    # user.create / user.move / user.terminate are separate permissions.
+    permissions = [
+        Permission(resource_id=resource.id, action=action)
+        for action in ("user.create", "user.move", "user.terminate")
+    ]
 
-    db.add(permission)
+    db.add_all(permissions)
     db.flush()
 
-    return permission
+    return permissions
 
 
 def assign_permission(db, user, role, permission):
     from app.db.models import RolePermission
 
-    db.add(
-        RolePermission(
-            role_id=role.id,
-            permission_id=permission.id,
+    for item in permission if isinstance(permission, list) else [permission]:
+        db.add(
+            RolePermission(
+                role_id=role.id,
+                permission_id=item.id,
+            )
         )
-    )
 
     db.add(
         UserRole(

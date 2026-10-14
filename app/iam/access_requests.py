@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app.governance.sod import evaluate_user_sod
 from app.audit.events import EventType, Result
 from app.audit.service import record_event
+from app.authz.service import has_permission
 from app.core.clock import now
 from app.db.models import AccessRequest, Role, User, UserRole
 
@@ -45,6 +46,47 @@ class AccessRequestAlreadyProvisionedError(AccessRequestError):
 
 class SodConflictError(AccessRequestError):
     """Raised when provisioning would violate an SoD policy."""
+
+
+class PrivilegedRoleAuthorizationError(AccessRequestError):
+    """Raised when an actor lacks role.assign_privileged for a privileged role."""
+
+
+class FourEyesViolationError(AccessRequestError):
+    """Raised when one person would cover two steps that need separate people
+    (target approving own access, self-provisioning, or approver == provisioner
+    for a privileged role)."""
+
+
+PRIVILEGED_ASSIGN_PERMISSION = "IdentityGuard:role.assign_privileged"
+
+
+def _deny(db: Session, *, actor: str, target: str, action: str, reason: str) -> None:
+    """Audit a denial. Committed immediately because the caller raises."""
+    record_event(
+        db,
+        actor=actor,
+        event_type=EventType.ACCESS_DENIED,
+        target=target,
+        action=action,
+        result=Result.DENIED,
+        reason=reason,
+    )
+    db.commit()
+
+
+def _require_privileged_authority(
+    db: Session, actor: User, role: Role, action: str
+) -> None:
+    if role.is_privileged and not has_permission(
+        db, actor, PRIVILEGED_ASSIGN_PERMISSION
+    ):
+        reason = (
+            f"'{role.name}' is a privileged role; {action} requires "
+            "role.assign_privileged"
+        )
+        _deny(db, actor=actor.username, target=role.name, action=action, reason=reason)
+        raise PrivilegedRoleAuthorizationError(reason)
 
 
 def _get_user(db: Session, user_id: int) -> User:
@@ -154,6 +196,24 @@ def approve_access_request(
             "Requester cannot approve their own access request"
         )
 
+    # Close the proxy loophole: someone else files the request *for* the
+    # approver, and the approver then approves access to themselves.
+    if approver.id == access_request.target_user_id:
+        _deny(
+            db,
+            actor=approver.username,
+            target=str(access_request.id),
+            action="approve_access_request",
+            reason="Target user attempted to approve access for themselves",
+        )
+        raise SelfApprovalError(
+            "Target user cannot approve access for themselves"
+        )
+
+    _require_privileged_authority(
+        db, approver, access_request.role, "approve_access_request"
+    )
+
     reason = reason.strip()
 
     if not reason:
@@ -248,6 +308,37 @@ def provision_access_request(
             "Access can only be provisioned for an active user"
         )
 
+    if provisioner.id == target_user.id:
+        reason = "Users cannot provision access to themselves"
+        _deny(
+            db,
+            actor=provisioner.username,
+            target=target_user.username,
+            action="provision_access",
+            reason=reason,
+        )
+        raise FourEyesViolationError(reason)
+
+    _require_privileged_authority(
+        db, provisioner, role, "provision_access"
+    )
+
+    # Four-eyes for privileged roles: approving and provisioning must be
+    # done by two different people.
+    if role.is_privileged and provisioner.username == access_request.decision_by:
+        reason = (
+            f"Four-eyes rule: the approver of privileged role '{role.name}' "
+            "cannot also provision it"
+        )
+        _deny(
+            db,
+            actor=provisioner.username,
+            target=target_user.username,
+            action="provision_access",
+            reason=reason,
+        )
+        raise FourEyesViolationError(reason)
+
     existing_assignment = db.scalar(
         select(UserRole).where(
             UserRole.user_id == target_user.id,
@@ -255,10 +346,19 @@ def provision_access_request(
         )
     )
 
+    # An expired (or terminated-out) assignment may be re-granted; only a
+    # still-active one is a duplicate.
+    reactivating = False
     if existing_assignment is not None:
-        raise AccessRequestAlreadyProvisionedError(
-            "User already has this role"
+        still_active = (
+            existing_assignment.expires_at is None
+            or existing_assignment.expires_at > now()
         )
+        if still_active:
+            raise AccessRequestAlreadyProvisionedError(
+                "User already has this role"
+            )
+        reactivating = True
 
 
     conflicts = evaluate_user_sod(
@@ -288,13 +388,17 @@ def provision_access_request(
             f"Provisioning blocked by SoD policy: {reason}"
         )
 
-    assignment = UserRole(
-        user_id=target_user.id,
-        role_id=role.id,
-        expires_at=access_request.expires_at,
-    )
-
-    db.add(assignment)
+    if reactivating:
+        existing_assignment.assigned_at = now()
+        existing_assignment.expires_at = access_request.expires_at
+    else:
+        db.add(
+            UserRole(
+                user_id=target_user.id,
+                role_id=role.id,
+                expires_at=access_request.expires_at,
+            )
+        )
 
     access_request.status = "PROVISIONED"
     access_request.provisioned_at = now()

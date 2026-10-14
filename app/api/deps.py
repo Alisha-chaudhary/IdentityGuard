@@ -79,4 +79,6 @@ def require_permission(permission: str):
 
         return current_user
 
+    # Lets tests (and reviewers) enumerate which permission guards each route.
+    dependency.required_permission = permission  # type: ignore[attr-defined]
     return dependency

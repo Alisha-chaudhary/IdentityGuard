@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import secrets
@@ -8,7 +9,13 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
 _hasher = PasswordHasher()
-_SECRET = os.environ.get("IDENTITYGUARD_JWT_SECRET") or secrets.token_urlsafe(48)
+_SECRET = os.environ.get("IDENTITYGUARD_JWT_SECRET")
+if not _SECRET:
+    logging.getLogger("identityguard").warning(
+        "IDENTITYGUARD_JWT_SECRET is not set: using a random per-process "
+        "secret. Tokens will be invalid after every restart."
+    )
+    _SECRET = secrets.token_urlsafe(48)
 _ALGORITHM = "HS256"
 
 

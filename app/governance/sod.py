@@ -10,7 +10,12 @@ from app.db.models import Role, User, UserRole
 
 # Each pair represents roles that must not be held together.
 SOD_CONFLICT_RULES: tuple[frozenset[str], ...] = (
+    # Classic financial control: whoever creates a payment cannot approve it.
     frozenset({"Payment Initiator", "Payment Approver"}),
+    # An administrator must not also run the monitoring that watches admins.
+    frozenset({"System Administrator", "SOC Analyst"}),
+    # Whoever administers the database must not audit the platform.
+    frozenset({"Database Administrator", "Security Auditor"}),
 )
 
 

@@ -3,7 +3,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, get_db
+from app.audit.events import EventType, Result
+from app.audit.service import record_event
 from app.auth.service import AuthenticationError, authenticate
+from app.core.security import (
+    WeakPasswordError,
+    check_password_strength,
+    hash_password,
+    verify_password,
+)
 from app.db.models import User, UserRole
 from app.authz.service import get_active_permissions
 
@@ -62,3 +70,58 @@ def get_me(
         "roles": active_roles,
         "permissions": sorted(get_active_permissions(db, current_user)),
     }
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+def change_password(
+    request: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    """Let an authenticated user change their own password (policy enforced)."""
+    if not verify_password(request.current_password, current_user.password_hash or ""):
+        record_event(
+            db,
+            actor=current_user.username,
+            event_type=EventType.USER_UPDATED,
+            target=f"user:{current_user.username}",
+            action="change_password",
+            result=Result.DENIED,
+            reason="Current password was incorrect",
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Current password is incorrect",
+        )
+
+    try:
+        check_password_strength(request.new_password, current_user.username)
+    except WeakPasswordError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
+
+    if verify_password(request.new_password, current_user.password_hash or ""):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="New password must differ from the current password",
+        )
+
+    current_user.password_hash = hash_password(request.new_password)
+    record_event(
+        db,
+        actor=current_user.username,
+        event_type=EventType.USER_UPDATED,
+        target=f"user:{current_user.username}",
+        action="change_password",
+        result=Result.SUCCESS,
+        reason="User changed their own password",
+    )
+    db.commit()

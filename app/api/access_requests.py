@@ -13,7 +13,9 @@ from app.iam.access_requests import (
     AccessRequestError,
     AccessRequestNotApprovedError,
     AccessRequestNotFoundError,
+    FourEyesViolationError,
     InvalidAccessRequestError,
+    PrivilegedRoleAuthorizationError,
     RoleNotFoundError,
     SelfApprovalError,
     UserNotFoundError,
@@ -72,7 +74,14 @@ def _map_error(error: AccessRequestError) -> HTTPException:
             detail=str(error),
         )
 
-    if isinstance(error, SelfApprovalError):
+    if isinstance(
+        error,
+        (
+            SelfApprovalError,
+            FourEyesViolationError,
+            PrivilegedRoleAuthorizationError,
+        ),
+    ):
         return HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(error),
