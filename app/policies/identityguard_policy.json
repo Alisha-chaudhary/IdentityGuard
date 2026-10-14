@@ -1,0 +1,35 @@
+{
+  "version": "1.0",
+  "default_effect": "deny",
+  "policies": [
+    {
+      "id": "deny-self-role-assignment",
+      "effect": "deny",
+      "actions": ["IdentityGuard:role.assign"],
+      "resources": ["role:*"],
+      "conditions": [
+        { "left": "subject.id", "op": "equals", "right": "context.target_user_id" }
+      ]
+    },
+    {
+      "id": "allow-privileged-role-assignment",
+      "effect": "allow",
+      "actions": ["IdentityGuard:role.assign"],
+      "resources": ["role:*"],
+      "conditions": [
+        { "left": "subject.permissions", "op": "contains", "value": "IdentityGuard:role.assign_privileged" },
+        { "left": "resource.attributes.is_privileged", "op": "equals", "value": true }
+      ]
+    },
+    {
+      "id": "allow-standard-role-assignment",
+      "effect": "allow",
+      "actions": ["IdentityGuard:role.assign"],
+      "resources": ["role:*"],
+      "conditions": [
+        { "left": "subject.permissions", "op": "contains", "value": "IdentityGuard:role.assign" },
+        { "left": "resource.attributes.is_privileged", "op": "equals", "value": false }
+      ]
+    }
+  ]
+}

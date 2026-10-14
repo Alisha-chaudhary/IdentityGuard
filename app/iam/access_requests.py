@@ -8,6 +8,11 @@ from app.core.clock import now
 from app.db.models import AccessRequest, Role, User, UserRole
 
 
+POLICY_AUTHZ_ENABLED = __import__("os").getenv(
+    "IDENTITYGUARD_POLICY_AUTHZ", "false"
+).lower() == "true"
+
+
 class AccessRequestError(Exception):
     """Base exception for access request operations."""
 
@@ -76,18 +81,50 @@ def _deny(db: Session, *, actor: str, target: str, action: str, reason: str) -> 
 
 
 def _require_privileged_authority(
-    db: Session, actor: User, role: Role, action: str
+    db: Session,
+    actor: User,
+    role: Role,
+    action: str,
+    target_user: User | None = None,
 ) -> None:
-    if role.is_privileged and not has_permission(
-        db, actor, PRIVILEGED_ASSIGN_PERMISSION
-    ):
+    if not role.is_privileged:
+        return
+
+    if POLICY_AUTHZ_ENABLED and target_user is not None:
+        try:
+            from app.authz.policy_service import can_assign_role_with_policy
+
+            if not can_assign_role_with_policy(db, actor, target_user, role):
+                reason = (
+                    f"'{role.name}' is a privileged role; {action} requires "
+                    "role.assign_privileged"
+                )
+                _deny(
+                    db,
+                    actor=actor.username,
+                    target=role.name,
+                    action=action,
+                    reason=reason,
+                )
+                raise PrivilegedRoleAuthorizationError(reason)
+            return
+        except Exception:
+            # Fallback keeps the legacy permission check authoritative.
+            pass
+
+    if not has_permission(db, actor, PRIVILEGED_ASSIGN_PERMISSION):
         reason = (
             f"'{role.name}' is a privileged role; {action} requires "
             "role.assign_privileged"
         )
-        _deny(db, actor=actor.username, target=role.name, action=action, reason=reason)
+        _deny(
+            db,
+            actor=actor.username,
+            target=role.name,
+            action=action,
+            reason=reason,
+        )
         raise PrivilegedRoleAuthorizationError(reason)
-
 
 def _get_user(db: Session, user_id: int) -> User:
     user = db.get(User, user_id)
@@ -211,7 +248,7 @@ def approve_access_request(
         )
 
     _require_privileged_authority(
-        db, approver, access_request.role, "approve_access_request"
+        db, approver, access_request.role, "approve_access_request", target_user=access_request.target_user
     )
 
     reason = reason.strip()
@@ -320,7 +357,7 @@ def provision_access_request(
         raise FourEyesViolationError(reason)
 
     _require_privileged_authority(
-        db, provisioner, role, "provision_access"
+        db, provisioner, role, "provision_access", target_user=target_user
     )
 
     # Four-eyes for privileged roles: approving and provisioning must be

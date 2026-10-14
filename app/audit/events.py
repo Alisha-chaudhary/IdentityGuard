@@ -34,6 +34,7 @@ class EventType(str, Enum):
     LOGIN_FAILED = "LOGIN_FAILED"
     ACCOUNT_LOCKED = "ACCOUNT_LOCKED"
     ACCESS_DENIED = "ACCESS_DENIED"
+    POLICY_DECISION = "POLICY_DECISION"
     
 
 class Result(str, Enum):
