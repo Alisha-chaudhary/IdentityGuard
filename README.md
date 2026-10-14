@@ -148,8 +148,22 @@ app/        API, authentication, authorization, audit, governance, IAM, PAM, pol
 frontend/   React + Vite review and reporting console
 tests/      automated unit and API tests
 scripts/    smoke-login and guided-demo utilities
-docs/       demo walkthrough and supporting documentation
+docs/       demo walkthrough, deployment reference, and supporting documentation
+deploy/     optional multi-stage Docker, compose, Kubernetes, and Jenkins reference assets
 ```
+
+## Deployment Reference (Optional)
+
+Optional non-production deployment assets are provided under deploy/ alongside the original Dockerfile and compose.yaml.
+
+Included:
+- deploy/docker/Dockerfile.multistage for a multi-stage FastAPI image
+- deploy/docker/docker-compose.reference.yml for the reference image
+- deploy/kubernetes/deployment.yaml and service.yaml as deployment reference manifests
+- deploy/jenkins/Jenkinsfile as a simple pipeline reference
+- docs/deployment-reference.md for build, health-check, compose, and Kubernetes notes
+
+These assets are reference-only. They are not a claim of production cluster operation or enterprise deployment ownership.
 
 ## Current limitations
 
