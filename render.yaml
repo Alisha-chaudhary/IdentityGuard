@@ -1,0 +1,15 @@
+﻿services:
+  - type: web
+    name: identityguard
+    env: python
+    plan: free
+    region: oregon
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "sh start_render.sh"
+    envVars:
+      - key: IDENTITYGUARD_JWT_SECRET
+        generateValue: true
+      - key: IdentityGuardpass
+        value: ChangeMe-To-A-Strong-12-Char-Pass!1
+    healthCheckPath: /health
+    autoDeploy: true
