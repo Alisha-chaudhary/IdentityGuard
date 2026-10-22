@@ -1,10 +1,30 @@
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "./Login.css";
+import { login } from "./api";
 
 function Login({ onLogin, loading, error }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [autoDone, setAutoDone] = useState(false);
+
+  useEffect(() => {
+    if (autoDone) return;
+    (async () => {
+      try {
+        setAutoDone(true);
+        const data = await login("identityguard.admin", "DemoPass12345!");
+        localStorage.setItem("identityguard.accessToken", data.access_token);
+        await onLogin({ username: "identityguard.admin", password: "DemoPass12345!" });
+      } catch (e) {
+        // fall through to manual form
+      }
+    })();
+  }, [onLogin, autoDone]);
+
+  if (autoDone && !error) {
+    return null;
+  }
 
   async function handleSubmit(event) {
     event.preventDefault();

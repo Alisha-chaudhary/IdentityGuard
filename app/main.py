@@ -3,6 +3,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.access_requests import router as access_requests_router
 from app.api.access_reviews import router as access_reviews_router
@@ -58,6 +59,14 @@ app = FastAPI(
         "IAM/IGA governance lab with a simulated PAM checkout workflow."
     ),
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://identity-guard-omega.vercel.app"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(auth_router)

@@ -5,6 +5,7 @@ import { fetchReport } from "./api.js";
 
 const TOKEN_KEY = "identityguard.accessToken";
 const REPORT_PERMISSION = "IdentityGuard:reports.read";
+const API_BASE = import.meta.env.VITE_API_URL || "";
 
 const navigation = [
   {
@@ -613,7 +614,7 @@ function App() {
     setAuthError("");
 
     try {
-      const loginResponse = await fetch("/auth/login", {
+      const loginResponse = await fetch(`${API_BASE}/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(credentials),
@@ -642,7 +643,7 @@ function App() {
         throw new Error("The server did not return a valid access token.");
       }
 
-      const profileResponse = await fetch("/auth/me", {
+      const profileResponse = await fetch(`${API_BASE}/auth/me`, {
         headers: {
           Authorization: `Bearer ${loginData.access_token}`,
         },
@@ -724,7 +725,7 @@ function App() {
       }
 
       try {
-        const response = await fetch("/auth/me", {
+        const response = await fetch(`${API_BASE}/auth/me`, {
           headers: {
             Authorization: `Bearer ${savedToken}`,
           },
