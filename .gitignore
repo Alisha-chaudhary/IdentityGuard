@@ -45,3 +45,6 @@ Thumbs.db
 .env.docker
 .env.compose
 compose.override.yaml
+.env
+.env.local
+

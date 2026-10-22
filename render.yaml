@@ -9,7 +9,5 @@
     envVars:
       - key: IDENTITYGUARD_JWT_SECRET
         generateValue: true
-      - key: IDENTITYGUARD_SEED_PASSWORD
-        value: ChangeMe-To-A-Strong-12-Char-Pass!1
     healthCheckPath: /health
     autoDeploy: true
