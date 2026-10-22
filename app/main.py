@@ -14,6 +14,7 @@ from app.api.reports import router as reports_router
 from app.api.roles import router as roles_router
 from app.api.users import router as users_router
 from app.auth.routes import router as auth_router
+from app.config import CORS_ORIGINS
 from app.db.init_db import init_db
 from app.db.session import SessionLocal
 from app.pam.service import expire_due_checkouts
@@ -63,7 +64,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://identity-guard-omega.vercel.app"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
