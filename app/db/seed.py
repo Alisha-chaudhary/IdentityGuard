@@ -524,8 +524,28 @@ def seed_demo_platform(db: Session, password: str) -> None:
     if resource is None:
         raise RuntimeError("Run seed(db) before seed_demo_platform(db).")
 
+    # Opt-in, one-time password reset for the demo administrator only.
+    # Set IDENTITYGUARD_RESET_DEMO_ADMIN_PASSWORD=true in the Render UI,
+    # trigger a deployment that runs seeding, then unset it immediately.
+    reset_admin_password = (
+        os.environ.get("IDENTITYGUARD_RESET_DEMO_ADMIN_PASSWORD", "")
+        .strip()
+        .lower()
+        in {"1", "true", "yes"}
+    )
+
     for emp_id, username, full_name, dept_name, role_names in DEMO_PLATFORM_USERS:
-        if db.scalar(select(User).where(User.username == username)):
+        existing_user = db.scalar(select(User).where(User.username == username))
+        if existing_user:
+            # Only the demo administrator may have its password reset, and only
+            # when the explicit opt-in switch is enabled.
+            if reset_admin_password and username == "identityguard.admin":
+                existing_user.password_hash = hash_password(password)
+                existing_user.failed_attempts = 0
+                existing_user.locked_until = None
+                # Do not reactivate disabled or terminated accounts.
+                if existing_user.status not in {"DISABLED", "TERMINATED"}:
+                    existing_user.status = "ACTIVE"
             continue
         department = db.scalar(select(Department).where(Department.name == dept_name))
         user = User(
