@@ -1,7 +1,6 @@
 
 import { useEffect, useState } from "react";
 import "./Login.css";
-import { login } from "./api";
 
 function Login({ onLogin, loading, error }) {
   const [username, setUsername] = useState("");
@@ -10,14 +9,17 @@ function Login({ onLogin, loading, error }) {
 
   useEffect(() => {
     if (autoDone) return;
+
     (async () => {
       try {
         setAutoDone(true);
-        const data = await login("identityguard.admin", "Identity_Guard!980");
-        localStorage.setItem("identityguard.accessToken", data.access_token);
-        await onLogin({ username: "identityguard.admin", password: "Identity_Guard!980!" });
+
+        await onLogin({
+          username: "identityguard.admin",
+          password: "Identity_Guard!980",
+        });
       } catch (e) {
-        // fall through to manual form
+        // Fall through to manual form
       }
     })();
   }, [onLogin, autoDone]);
