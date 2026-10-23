@@ -13,9 +13,9 @@ function Login({ onLogin, loading, error }) {
     (async () => {
       try {
         setAutoDone(true);
-        const data = await login("identityguard.admin", "DemoPass12345!");
+        const data = await login("identityguard.admin", "Identity_Guard!980");
         localStorage.setItem("identityguard.accessToken", data.access_token);
-        await onLogin({ username: "identityguard.admin", password: "DemoPass12345!" });
+        await onLogin({ username: "identityguard.admin", password: "Identity_Guard!980!" });
       } catch (e) {
         // fall through to manual form
       }
