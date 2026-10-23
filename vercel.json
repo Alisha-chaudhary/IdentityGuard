@@ -1,6 +1,5 @@
 {
   "version": 2,
-  "rootDirectory": "frontend",
   "buildCommand": "npm ci && npm run build",
   "devCommand": "npm run dev",
   "installCommand": "npm ci",
