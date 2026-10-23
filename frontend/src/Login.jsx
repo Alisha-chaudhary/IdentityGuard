@@ -1,32 +1,10 @@
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import "./Login.css";
 
 function Login({ onLogin, loading, error }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [autoDone, setAutoDone] = useState(false);
-
-  useEffect(() => {
-    if (autoDone) return;
-
-    (async () => {
-      try {
-        setAutoDone(true);
-
-        await onLogin({
-          username: "identityguard.admin",
-          password: "Identity_Guard!980",
-        });
-      } catch (e) {
-        // Fall through to manual form
-      }
-    })();
-  }, [onLogin, autoDone]);
-
-  if (autoDone && !error) {
-    return null;
-  }
 
   async function handleSubmit(event) {
     event.preventDefault();
