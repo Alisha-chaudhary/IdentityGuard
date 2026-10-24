@@ -564,23 +564,22 @@ def seed_demo_platform(db: Session, password: str) -> None:
             role = db.scalar(select(Role).where(Role.name == role_name))
             db.add(UserRole(user_id=user.id, role_id=role.id))
 
-
-    # Optional recruiter demo account with a dedicated password.
-    recruiter_password = os.environ.get(
-        "IDENTITYGUARD_RECRUITER_DEMO_PASSWORD", ""
+    # Optional read-only workspace account.
+    viewer_password = os.environ.get(
+        "IDENTITYGUARD_VIEWER_PASSWORD", ""
     ).strip()
 
-    reset_recruiter_password = (
-        os.environ.get("IDENTITYGUARD_RESET_RECRUITER_DEMO_PASSWORD", "")
+    reset_viewer_password = (
+        os.environ.get("IDENTITYGUARD_RESET_VIEWER_PASSWORD", "")
         .strip()
         .lower()
         in {"1", "true", "yes"}
     )
 
-    if recruiter_password:
+    if viewer_password:
         check_password_strength(
-            recruiter_password,
-            username="recruiter.demo",
+            viewer_password,
+            username="demo.users",
         )
 
         auditor_role = db.scalar(
@@ -596,39 +595,39 @@ def seed_demo_platform(db: Session, password: str) -> None:
                 "Run seed(db) first."
             )
 
-        recruiter = db.scalar(
-            select(User).where(User.username == "recruiter.demo")
+        user = db.scalar(
+            select(User).where(User.username == "demo.users")
         )
 
-        if recruiter is None:
-            recruiter = User(
-                employee_id="REC001",
-                username="recruiter.demo",
-                full_name="Recruiter Demo",
-                email="recruiter.demo@example.test",
+        if user is None:
+            user = User(
+                employee_id="DEMO001",
+                username="demo.users",
+                full_name="Demo User",
+                email="demo.users@example.test",
                 department_id=auditor_user.department_id,
-                password_hash=hash_password(recruiter_password),
+                password_hash=hash_password(viewer_password),
                 status="ACTIVE",
                 failed_attempts=0,
             )
-            db.add(recruiter)
+            db.add(user)
             db.flush()
         else:
-            if recruiter.employee_id != "REC001":
+            if user.employee_id != "DEMO001":
                 raise RuntimeError(
-                    "Unexpected employee ID for recruiter.demo."
+                    "Unexpected employee ID for demo.users."
                 )
 
-            if recruiter.status in {"DISABLED", "TERMINATED"}:
+            if user.status in {"DISABLED", "TERMINATED"}:
                 raise RuntimeError(
-                    "recruiter.demo is disabled or terminated. "
+                    "demo.users is disabled or terminated. "
                     "Review it manually."
                 )
 
             assigned_roles = db.scalars(
                 select(Role)
                 .join(UserRole, UserRole.role_id == Role.id)
-                .where(UserRole.user_id == recruiter.id)
+                .where(UserRole.user_id == user.id)
             ).all()
 
             if any(
@@ -636,33 +635,33 @@ def seed_demo_platform(db: Session, password: str) -> None:
                 for role in assigned_roles
             ):
                 raise RuntimeError(
-                    "recruiter.demo has additional roles. "
+                    "demo.users has additional roles. "
                     "Review them manually."
                 )
 
-            if reset_recruiter_password:
-                recruiter.password_hash = hash_password(recruiter_password)
-                recruiter.failed_attempts = 0
-                recruiter.locked_until = None
+            if reset_viewer_password:
+                user.password_hash = hash_password(viewer_password)
+                user.failed_attempts = 0
+                user.locked_until = None
 
         if db.scalar(
             select(UserRole).where(
-                UserRole.user_id == recruiter.id,
+                UserRole.user_id == user.id,
                 UserRole.role_id == auditor_role.id,
             )
         ) is None:
             db.add(
                 UserRole(
-                    user_id=recruiter.id,
+                    user_id=user.id,
                     role_id=auditor_role.id,
                 )
             )
 
-        print("Recruiter demo account is configured.")
+        print("Read-only workspace account configured.")
     else:
         print(
-            "Recruiter demo account skipped: "
-            "IDENTITYGUARD_RECRUITER_DEMO_PASSWORD is not configured."
+            "Read-only workspace account skipped: "
+            "IDENTITYGUARD_VIEWER_PASSWORD is not configured."
         )
 
     operator = db.scalar(select(Role).where(Role.name == PAM_OPERATOR_ROLE))

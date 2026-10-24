@@ -10,26 +10,26 @@ from app.pam.models import PamAccount, PamSafe  # noqa: F401
 
 
 SEED_PASSWORD = "Shared-Seed-Password-2026!"
-RECRUITER_PASSWORD = "Recruiter-Demo-Only-Password-2026!"
-UPDATED_RECRUITER_PASSWORD = "Updated-Recruiter-Password-2026!"
+VIEWER_PASSWORD = "Viewer-Demo-Only-Password-2026!"
+UPDATED_VIEWER_PASSWORD = "Updated-Viewer-Password-2026!"
 
 
 def _prepare_demo(db, monkeypatch):
     seed(db)
     monkeypatch.setenv(
-        "IDENTITYGUARD_RECRUITER_DEMO_PASSWORD",
-        RECRUITER_PASSWORD,
+        "IDENTITYGUARD_VIEWER_PASSWORD",
+        VIEWER_PASSWORD,
     )
     monkeypatch.delenv(
-        "IDENTITYGUARD_RESET_RECRUITER_DEMO_PASSWORD",
+        "IDENTITYGUARD_RESET_VIEWER_PASSWORD",
         raising=False,
     )
     seed_demo_platform(db, SEED_PASSWORD)
 
 
-def _recruiter(db):
+def _viewer(db):
     user = db.scalar(
-        select(User).where(User.username == "recruiter.demo")
+        select(User).where(User.username == "demo.users")
     )
     assert user is not None
     return user
@@ -57,20 +57,21 @@ def _role_permissions(db, role_name):
     }
 
 
-def test_recruiter_demo_uses_its_dedicated_password(db, monkeypatch):
+def test_viewer_demo_uses_its_dedicated_password(db, monkeypatch):
     _prepare_demo(db, monkeypatch)
 
-    user = _recruiter(db)
+    user = _viewer(db)
 
-    assert verify_password(RECRUITER_PASSWORD, user.password_hash)
+    assert user.employee_id == "DEMO001"
+    assert verify_password(VIEWER_PASSWORD, user.password_hash)
     assert not verify_password(SEED_PASSWORD, user.password_hash)
     assert user.status == "ACTIVE"
 
 
-def test_recruiter_demo_has_only_security_auditor_role(db, monkeypatch):
+def test_viewer_demo_has_only_security_auditor_role(db, monkeypatch):
     _prepare_demo(db, monkeypatch)
 
-    user = _recruiter(db)
+    user = _viewer(db)
 
     assert _assigned_roles(db, user) == {"Security Auditor"}
 
@@ -82,69 +83,73 @@ def test_recruiter_demo_has_only_security_auditor_role(db, monkeypatch):
     }
 
 
-def test_recruiter_demo_is_skipped_without_dedicated_password(
+def test_viewer_demo_is_skipped_without_dedicated_password(
     db, monkeypatch
 ):
     seed(db)
     monkeypatch.delenv(
-        "IDENTITYGUARD_RECRUITER_DEMO_PASSWORD",
+        "IDENTITYGUARD_VIEWER_PASSWORD",
+        raising=False,
+    )
+    monkeypatch.delenv(
+        "IDENTITYGUARD_RESET_VIEWER_PASSWORD",
         raising=False,
     )
 
     seed_demo_platform(db, SEED_PASSWORD)
 
     user = db.scalar(
-        select(User).where(User.username == "recruiter.demo")
+        select(User).where(User.username == "demo.users")
     )
     assert user is None
 
 
-def test_recruiter_password_is_not_reset_without_opt_in(
+def test_viewer_password_is_not_reset_without_opt_in(
     db, monkeypatch
 ):
     _prepare_demo(db, monkeypatch)
 
     monkeypatch.setenv(
-        "IDENTITYGUARD_RECRUITER_DEMO_PASSWORD",
-        UPDATED_RECRUITER_PASSWORD,
+        "IDENTITYGUARD_VIEWER_PASSWORD",
+        UPDATED_VIEWER_PASSWORD,
     )
     seed_demo_platform(db, SEED_PASSWORD)
 
-    user = _recruiter(db)
+    user = _viewer(db)
 
-    assert verify_password(RECRUITER_PASSWORD, user.password_hash)
+    assert verify_password(VIEWER_PASSWORD, user.password_hash)
     assert not verify_password(
-        UPDATED_RECRUITER_PASSWORD,
+        UPDATED_VIEWER_PASSWORD,
         user.password_hash,
     )
 
 
-def test_recruiter_password_resets_only_with_opt_in(
+def test_viewer_password_resets_only_with_opt_in(
     db, monkeypatch
 ):
     _prepare_demo(db, monkeypatch)
 
     monkeypatch.setenv(
-        "IDENTITYGUARD_RECRUITER_DEMO_PASSWORD",
-        UPDATED_RECRUITER_PASSWORD,
+        "IDENTITYGUARD_VIEWER_PASSWORD",
+        UPDATED_VIEWER_PASSWORD,
     )
     monkeypatch.setenv(
-        "IDENTITYGUARD_RESET_RECRUITER_DEMO_PASSWORD",
+        "IDENTITYGUARD_RESET_VIEWER_PASSWORD",
         "true",
     )
 
     seed_demo_platform(db, SEED_PASSWORD)
 
-    user = _recruiter(db)
+    user = _viewer(db)
 
-    assert verify_password(UPDATED_RECRUITER_PASSWORD, user.password_hash)
-    assert not verify_password(RECRUITER_PASSWORD, user.password_hash)
+    assert verify_password(UPDATED_VIEWER_PASSWORD, user.password_hash)
+    assert not verify_password(VIEWER_PASSWORD, user.password_hash)
 
 
-def test_recruiter_demo_rejects_additional_roles(db, monkeypatch):
+def test_viewer_demo_rejects_additional_roles(db, monkeypatch):
     _prepare_demo(db, monkeypatch)
 
-    user = _recruiter(db)
+    user = _viewer(db)
     admin_role = db.scalar(
         select(Role).where(Role.name == "IAM Administrator")
     )
