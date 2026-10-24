@@ -564,6 +564,107 @@ def seed_demo_platform(db: Session, password: str) -> None:
             role = db.scalar(select(Role).where(Role.name == role_name))
             db.add(UserRole(user_id=user.id, role_id=role.id))
 
+
+    # Optional recruiter demo account with a dedicated password.
+    recruiter_password = os.environ.get(
+        "IDENTITYGUARD_RECRUITER_DEMO_PASSWORD", ""
+    ).strip()
+
+    reset_recruiter_password = (
+        os.environ.get("IDENTITYGUARD_RESET_RECRUITER_DEMO_PASSWORD", "")
+        .strip()
+        .lower()
+        in {"1", "true", "yes"}
+    )
+
+    if recruiter_password:
+        check_password_strength(
+            recruiter_password,
+            username="recruiter.demo",
+        )
+
+        auditor_role = db.scalar(
+            select(Role).where(Role.name == "Security Auditor")
+        )
+        auditor_user = db.scalar(
+            select(User).where(User.username == "auditor")
+        )
+
+        if auditor_role is None or auditor_user is None:
+            raise RuntimeError(
+                "Security Auditor role or auditor account is missing. "
+                "Run seed(db) first."
+            )
+
+        recruiter = db.scalar(
+            select(User).where(User.username == "recruiter.demo")
+        )
+
+        if recruiter is None:
+            recruiter = User(
+                employee_id="REC001",
+                username="recruiter.demo",
+                full_name="Recruiter Demo",
+                email="recruiter.demo@example.test",
+                department_id=auditor_user.department_id,
+                password_hash=hash_password(recruiter_password),
+                status="ACTIVE",
+                failed_attempts=0,
+            )
+            db.add(recruiter)
+            db.flush()
+        else:
+            if recruiter.employee_id != "REC001":
+                raise RuntimeError(
+                    "Unexpected employee ID for recruiter.demo."
+                )
+
+            if recruiter.status in {"DISABLED", "TERMINATED"}:
+                raise RuntimeError(
+                    "recruiter.demo is disabled or terminated. "
+                    "Review it manually."
+                )
+
+            assigned_roles = db.scalars(
+                select(Role)
+                .join(UserRole, UserRole.role_id == Role.id)
+                .where(UserRole.user_id == recruiter.id)
+            ).all()
+
+            if any(
+                role.name != "Security Auditor"
+                for role in assigned_roles
+            ):
+                raise RuntimeError(
+                    "recruiter.demo has additional roles. "
+                    "Review them manually."
+                )
+
+            if reset_recruiter_password:
+                recruiter.password_hash = hash_password(recruiter_password)
+                recruiter.failed_attempts = 0
+                recruiter.locked_until = None
+
+        if db.scalar(
+            select(UserRole).where(
+                UserRole.user_id == recruiter.id,
+                UserRole.role_id == auditor_role.id,
+            )
+        ) is None:
+            db.add(
+                UserRole(
+                    user_id=recruiter.id,
+                    role_id=auditor_role.id,
+                )
+            )
+
+        print("Recruiter demo account is configured.")
+    else:
+        print(
+            "Recruiter demo account skipped: "
+            "IDENTITYGUARD_RECRUITER_DEMO_PASSWORD is not configured."
+        )
+
     operator = db.scalar(select(Role).where(Role.name == PAM_OPERATOR_ROLE))
     if operator is None:
         operator = Role(
