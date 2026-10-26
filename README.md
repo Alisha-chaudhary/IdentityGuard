@@ -35,7 +35,8 @@ The project combines a **Python/FastAPI backend**, **SQLAlchemy + SQLite**, and 
 - A small PBAC/ABAC policy engine in `app/authz/policy_engine.py`.
 - Feature-flagged policy authorization in `app/iam/access_requests.py` (`IDENTITYGUARD_POLICY_AUTHZ`).
 - Policy decisions recorded into the existing audit trail as `POLICY_DECISION`.
-- Legacy permission checks remain the default and fallback path.
+- Legacy permission checks remain the default path and run when the policy
+  feature is disabled or no target user is present.
 
 ### Privileged access, simulated
 - Privileged-access request flow.
@@ -78,12 +79,12 @@ The project combines a **Python/FastAPI backend**, **SQLAlchemy + SQLite**, and 
 | SoD checks and violation reports | Implemented |
 | Access reviews and summaries | Implemented |
 | Audit trail and reports | Implemented |
-| Policy engine for privileged assignment | Implemented, feature-flagged, default off |
+| Policy engine for privileged assignment | Implemented, feature-flagged, default off; authoritative and fail-closed when enabled |
 | PAM lifecycle simulation | Simulated; no real credential vault/session recording |
 | Audit integrity | Hash chain; not tamper-proof |
 | SSO/OIDC/Keycloak | Not implemented |
-| Rate limiting | Not implemented |
-| Database migrations | Not implemented |
+| Rate limiting | Implemented on /auth/login (per-IP request window); account lockout is a separate per-account control |
+| Database migrations | Not implemented (create_all only; introduce Alembic or add new tables for schema changes) |
 | All workflows in frontend | Partial; several workflows are API-first |
 
 ## Run locally
@@ -170,11 +171,10 @@ These assets are reference-only. They are not a claim of production cluster oper
 - **Simulated PAM:** no real credential vault, password rotation, or session recording.
 - **Audit integrity:** hash chaining helps detect changes but is not tamper-proof.
 - **Session handling:** logout is client-side; no server-side token denylist.
-- **Abuse protection:** rate limiting is not implemented yet.
-- **Storage and schema changes:** SQLite without a migration framework.
-- **Governance rules:** SoD rules are defined in application code; mover workflow retains roles by design, with access review as compensating control.
-- **Integrations and UI:** no SSO/OIDC or Keycloak integration; frontend does not expose every workflow.
-- **Policy engine:** currently used only for privileged role assignment, behind a feature flag with legacy fallback.
+- **Abuse protection:** rate limiting is implemented on /auth/login (per-IP request window). Account lockout (per account, five failures / fifteen minutes) is a separate control.
+- **Token revocation:** short-lived JWTs are issued with no server-side denylist; logout and compromise revocation are client-side/time-bound only.
+- **Policy engine:** used only for privileged role assignment, behind `IDENTITYGUARD_POLICY_AUTHZ` (default off). When enabled, policy decisions are authoritative and fail-closed; the legacy permission path runs only when policy is disabled or `target_user` is absent.
+- **Storage and schema changes:** SQLite without a migration framework. `create_all()` creates missing tables but does not add columns to existing tables; use Alembic or add new tables for LDAP/integration schema changes.
 
 ## Why I am building it
 
