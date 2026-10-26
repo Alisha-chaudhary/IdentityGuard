@@ -1,183 +1,119 @@
 # IdentityGuard
 
-**An IAM Governance Lab I Built to Explore How Access Should Be Managed**
+An IAM governance and access-management lab I built to learn how access is requested, approved, reviewed, elevated and audited. Privileged access is **simulated**. This is a portfolio project and not production IAM or PAM software.
 
-IdentityGuard is a portfolio-grade **identity governance and access-management lab**. It models how access is requested, approved, provisioned, reviewed, revoked, and recorded for audit across users, roles, and entitlements.
+**Status** In active development.
+**Live demo** [identity-guard-omega.vercel.app](https://identity-guard-omega.vercel.app/) (read-only demo user, synthetic data only, see [docs/DEMO.md](docs/DEMO.md))
+**Stack** Python, FastAPI, SQLAlchemy, SQLite, Pytest, React
 
-The project combines a **Python/FastAPI backend**, **SQLAlchemy + SQLite**, and a **React/Vite console**. The priority is not just authentication; it is **authorization and governance behavior**—especially the awkward cases that matter in real environments: self-approval attempts, privileged roles needing extra checks, segregation-of-duties (SoD) conflicts, JML transitions, access reviews that must survive in-flight changes, and externalized policy decisions.
+## Table of contents
 
-> **Scope note:** IdentityGuard is a learning and portfolio project, not a commercial IAM/PAM product. Privileged access is simulated; there is no real credential vault, password rotation, or session recording. This repository is used to practise and discuss IAM concepts, not to claim production IAM/PAM operations experience.
+1. [What it does](#what-it-does)
+2. [Simulated PAM versus real PAM](#simulated-pam-versus-real-pam)
+3. [Try the demo](#try-the-demo)
+4. [Run it locally](#run-it-locally)
+5. [Things I learnt](#things-i-learnt)
+6. [Decisions I took](#decisions-i-took)
+7. [Security review and known limitations](#security-review-and-known-limitations)
+8. [Roadmap](#roadmap)
 
----
+## What it does
 
-## What IdentityGuard demonstrates
-
-### Identity and authentication
-- Argon2id password hashing.
-- Generic login errors to avoid user enumeration.
-- Login lockout and password-policy enforcement.
-- Short-lived JWT sessions.
-
-### Authorization and access governance
-- Backend-enforced role-based access control.
-- Permissions evaluated against current database state on protected requests.
-- Access request -> approval -> provision workflow.
-- Self-approval restrictions.
-- Approver/provisioner separation for privileged roles.
-- Joiner / mover / leaver (JML) handling.
-- Segregation-of-duties (SoD) checks and violation reporting.
-- Access reviews with assignment snapshots and self-review prevention.
-- Tamper-evident, hash-chained audit trail.
-- Access-control and governance reporting.
-
-### Authorization as code
-- Externalized role-assignment policy in `app/policies/identityguard_policy.json`.
-- A small PBAC/ABAC policy engine in `app/authz/policy_engine.py`.
-- Feature-flagged policy authorization in `app/iam/access_requests.py` (`IDENTITYGUARD_POLICY_AUTHZ`).
-- Policy decisions recorded into the existing audit trail as `POLICY_DECISION`.
-- Legacy permission checks remain the default and fallback path.
-
-### Privileged access, simulated
-- Privileged-access request flow.
-- Approval and provisioning separation.
-- Time-limited checkout concepts, expiry, and revocation.
-- PAM activity reporting.
-- Explicit documentation that no real credential vault exists.
-
-### Delivery and engineering
-- FastAPI application structure.
-- SQLAlchemy models and sessions.
-- Seed/demo scripts.
-- Unit and API tests.
-- React/Vite console for selected workflows.
-- Docker configuration and CI workflow files.
-- Environment-based configuration.
-
-## Enterprise IAM concept mapping
-
-| IdentityGuard capability | Enterprise IAM concept |
+| Area | What is implemented |
 |---|---|
-| RBAC + current-state permission checks | Role-Based Access Control and least privilege |
-| Request/approve/provision | Entitlement request lifecycle |
-| SoD conflict checks | Segregation of duties and control enforcement |
-| JML transitions | Joiner/mover/leaver access lifecycle |
-| Access reviews with snapshots | Periodic access certification / attestation |
-| Reports and audit trail | Identity inventory, entitlement reporting, audit evidence |
-| Simulated checkout/expiry/revocation | Privileged access management lifecycle concepts |
-| Policy engine + JSON policy | Policy-Based Access Control as code |
+| Role-based access control | Roles, permissions and a permission-checked API |
+| Joiner, mover, leaver | User lifecycle changes that update access and are written to the audit log |
+| Access requests | Request and approval workflow |
+| Separation of duties | Rules that block conflicting access |
+| Access reviews | Review cycles with decisions, completion and a correction path |
+| Simulated privileged access | Time-limited elevation that expires automatically |
+| Audit chain | Tamper-evident audit events |
+| Reports | Summary and governance reports built from the audit data |
 
-## Implemented vs. simulated
+<!-- VERIFY before commit: confirm each row above matches what is on main, especially reports and SoD. Remove any row that is still only on a local branch. -->
 
-| Area | Status |
-|---|---|
-| Argon2id password hashing | Implemented |
-| JWT sessions | Implemented |
-| Backend RBAC | Implemented |
-| Access request/approval/provisioning | Implemented |
-| JML transitions | Implemented |
-| SoD checks and violation reports | Implemented |
-| Access reviews and summaries | Implemented |
-| Audit trail and reports | Implemented |
-| Policy engine for privileged assignment | Implemented, feature-flagged, default off |
-| PAM lifecycle simulation | Simulated; no real credential vault/session recording |
-| Audit integrity | Hash chain; not tamper-proof |
-| SSO/OIDC/Keycloak | Not implemented |
-| Rate limiting | Not implemented |
-| Database migrations | Not implemented |
-| All workflows in frontend | Partial; several workflows are API-first |
+## Simulated PAM versus real PAM
 
-## Run locally
 
-```powershell
+| Capability | IdentityGuard | Enterprise PAM platform |
+|---|---|---|
+| Time-limited privilege elevation | Simulated with expiry | Yes |
+| Approval before elevation | Yes | Yes |
+| Audit trail of who had access and when | Yes | Yes |
+| Credential vaulting | Not built | Yes |
+| Automatic password rotation | Not built | Yes |
+| Session isolation and recording | Not built | Yes |
+| Directory integration (LDAP or AD) | Not built | Yes |
+
+IdentityGuard teaches the governance and lifecycle side. It does not store or rotate real credentials and it does not broker sessions.
+
+## Try the demo
+
+The hosted demo signs in as a zero-privilege user on synthetic data, so nothing real can be changed. The backend sleeps when idle and can take up to a minute to wake. A guided walkthrough is in [docs/DEMO.md](docs/DEMO.md).
+
+## Run it locally
+
+```bash
 git clone https://github.com/Alisha-chaudhary/IdentityGuard.git
 cd IdentityGuard
-py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements-dev.txt
+python -m venv .venv
+source .venv/bin/activate        # on Windows use .venv\Scripts\activate
+pip install -r requirements.txt
+pytest
+uvicorn app.main:app --reload
 ```
 
-Set local development secrets:
+<!-- VERIFY before commit: confirm the uvicorn entry point, how the database is seeded, and where the frontend lives, then add the frontend start commands. -->
 
-```powershell
-$env:IDENTITYGUARD_JWT_SECRET = "<your-long-random-local-secret>"
-$env:IDENTITYGUARD_SEED_PASSWORD = "<your-strong-local-demo-password>"
-```
+## Things I learnt
 
-Initialize and start the API:
+1. **Authorization has to live on the server.** Hiding a button in the UI does not stop a request. The API checks a permission on every route, and the demo user is safe because the server refuses writes, not because the interface hides them.
+2. **An audit log is only useful if it cannot be quietly edited.** Events are chained so tampering is detectable. When a review decision had the wrong reason, I added a correction event instead of changing the original record.
+3. **Access reviews expose design conflicts.** My own admin account could not review its own IAM Administrator role without reviewing itself. Fixing that meant adding a separate reviewer role instead of making an exception.
+4. **Simulating PAM taught me where the real product starts.** Expiring elevation and approvals cover the lifecycle. Vaulting, rotation and session recording are separate problems that I have not built.
+5. **Reviewing my own code found real gaps.** A static scan and manual review turned up missing login rate limiting, no server-side token revocation and silent exception handling. Writing them up taught me to threat model the authentication path first.
+6. **A status summary is not a test run.** I stopped trusting a reported pass count and started rerunning the suite before saying anything about it.
+7. **Public demos need their own threat model.** Free hosting, cold starts and an open login endpoint are all things a visitor can reach, so the demo account has to be least privilege by design.
 
-```powershell
-python -m app.db.seed
-python -m uvicorn app.main:app --reload
-```
+## Decisions I took
 
-Open `http://127.0.0.1:8000/docs`.
+| Decision | Why | Trade-off |
+|---|---|---|
+| Simulate PAM instead of building a vault | Keeps scope honest and lets me focus on governance and lifecycle | No real credential handling |
+| Permission-based authorization on the API | Roles can change without touching route code | More permissions to manage |
+| Audit events are never edited or deleted | Keeps the chain trustworthy | Mistakes need correction events |
+| Separate `access_review.correct` permission for IAM Administrators only | Corrections are powerful and should be rare | Extra permission to explain |
+| Non-privileged Access Reviewer role (view and decide) | Removes the admin self-review conflict | One more role to seed and test |
+| Zero-privilege demo user on synthetic data | Recruiters can explore with no risk | Visitors cannot try approvals themselves |
+| SQLite and SQLAlchemy | Simple to run locally for a lab | No migration framework yet |
+| Feature branches merged with `--no-ff`, small verified changes | Easy to see what changed and why | Slower than committing straight to main |
+| Treat the first review cycle as a test cycle and use a clean second cycle for demos | Keeps demo data tidy without altering audit history | Two cycles to maintain |
+| Call PAM simulated everywhere it appears | Avoids overclaiming | Less impressive wording |
 
-Run workflows and tests:
+<!-- VERIFY before commit: confirm the review cycle decision was carried out, and that access_review.correct and the Access Reviewer role are on main. -->
 
-```powershell
-python -m scripts.smoke_login
-python -m scripts.demo
-python -m pytest -q
-```
+## Security review and known limitations
 
-Enable the policy path only when testing it:
+I reviewed this project myself with Bandit and a manual read. The write-up is in [Secure-coding-review](https://github.com/Alisha-chaudhary/Secure-coding-review). I track each finding here.
 
-```powershell
-$env:IDENTITYGUARD_POLICY_AUTHZ="true"
-python -m pytest -q
-```
+| Finding | CWE | Status |
+|---|---|---|
+| No rate limiting on login | CWE-307 | Open |
+| No server-side token revocation | CWE-613 | Open |
+| Silent exception handling in the access-expiry sweeper | CWE-703 | Open |
+| Broad exception fallback in access requests | CWE-703 | Open |
+| No password history check | CWE-521 | Open |
+| SQLite without migrations | CWE-1036 | Open |
+| Detailed user information on the current-user endpoint | CWE-200 | Open |
 
-## Frontend
+<!-- VERIFY before commit: change Status to Fixed (with the PR number) for any finding you have already remediated. Leave Open only if it is still true. -->
 
-```powershell
-cd frontend
-npm ci
-npm run dev
-```
+Other limits are listed in [Simulated PAM versus real PAM](#simulated-pam-versus-real-pam).
 
-## Docker
+## Roadmap
 
-```powershell
-docker compose up --build
-```
-
-## Repository map
-
-```text
-app/        API, authentication, authorization, audit, governance, IAM, PAM, policy engine, reports, database, core
-frontend/   React + Vite review and reporting console
-tests/      automated unit and API tests
-scripts/    smoke-login and guided-demo utilities
-docs/       demo walkthrough, deployment reference, and supporting documentation
-deploy/     optional multi-stage Docker, compose, Kubernetes, and Jenkins reference assets
-```
-
-## Deployment Reference (Optional)
-
-Optional non-production deployment assets are provided under deploy/ alongside the original Dockerfile and compose.yaml.
-
-Included:
-- deploy/docker/Dockerfile.multistage for a multi-stage FastAPI image
-- deploy/docker/docker-compose.reference.yml for the reference image
-- deploy/kubernetes/deployment.yaml and service.yaml as deployment reference manifests
-- deploy/jenkins/Jenkinsfile as a simple pipeline reference
-- docs/deployment-reference.md for build, health-check, compose, and Kubernetes notes
-
-These assets are reference-only. They are not a claim of production cluster operation or enterprise deployment ownership.
-
-## Current limitations
-
-- **Simulated PAM:** no real credential vault, password rotation, or session recording.
-- **Audit integrity:** hash chaining helps detect changes but is not tamper-proof.
-- **Session handling:** logout is client-side; no server-side token denylist.
-- **Abuse protection:** rate limiting is not implemented yet.
-- **Storage and schema changes:** SQLite without a migration framework.
-- **Governance rules:** SoD rules are defined in application code; mover workflow retains roles by design, with access review as compensating control.
-- **Integrations and UI:** no SSO/OIDC or Keycloak integration; frontend does not expose every workflow.
-- **Policy engine:** currently used only for privileged role assignment, behind a feature flag with legacy fallback.
-
-## Why I am building it
-
-I wanted a project that connects security principles to actual application behavior rather than just listing IAM terms. IdentityGuard lets me practise least privilege, approval separation, joiner-mover-leaver controls, segregation of duties, access reviews, privileged-access lifecycle concepts, policy-as-code, and auditability in one place.
-
-I use it as a learning lab and a basis for technical discussion. It is **not** a claim of production IAM/PAM operations experience, and it does not claim CyberArk integration. The goal is to keep extending the project while being clear about what is implemented, what is simulated, and what still needs work.
+- Hardening items from the security review
+- GitHub Actions running the test suite
+- Docker setup
+- Frontend polish
+- A tagged v1.0 release
