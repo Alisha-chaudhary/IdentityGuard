@@ -85,8 +85,8 @@ def grant(db, username: str, role: Role) -> None:
 def _reset_login_rate_limiter():
     """Reset the in-memory login rate limiter around every API test so
     one test's login attempts cannot rate-limit another test."""
-    from app.core.rate_limit import login_rate_limiter
+    from app.auth.routes import _login_rate_limiter
 
-    login_rate_limiter.reset()
+    _login_rate_limiter.reset()
     yield
-    login_rate_limiter.reset()
+    _login_rate_limiter.reset()

@@ -93,28 +93,12 @@ def _require_privileged_authority(
     if POLICY_AUTHZ_ENABLED and target_user is not None:
         from app.authz.policy_service import can_assign_role_with_policy
 
-        try:
-            allowed = can_assign_role_with_policy(
-                db,
-                actor,
-                target_user,
-                role,
-            )
-        except Exception:
-            # Policy engine or audit failure: fail closed. Never fall back to
-            # the legacy permission check when policy authorization is enabled.
-            reason = (
-                f"'{role.name}' is a privileged role; {action} requires "
-                "role.assign_privileged"
-            )
-            _deny(
-                db,
-                actor=actor.username,
-                target=role.name,
-                action=action,
-                reason=reason + "; policy authorization unavailable",
-            )
-            raise PrivilegedRoleAuthorizationError(reason)
+        allowed = can_assign_role_with_policy(
+            db,
+            actor,
+            target_user,
+            role,
+        )
 
         if not allowed:
             reason = (

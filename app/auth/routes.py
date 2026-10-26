@@ -57,8 +57,7 @@ def login(
         db.commit()
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many login attempts",
-        )
+            detail="Too many login attempts. Try again later.",
         )
 
     try:
