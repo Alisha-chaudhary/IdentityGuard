@@ -57,7 +57,7 @@ def test_seed_creates_expected_data(db):
     seed(db)
 
     assert len(db.scalars(select(User)).all()) == 7
-    assert len(db.scalars(select(Role)).all()) == 12
+    assert len(db.scalars(select(Role)).all()) == 13
 
 
 def test_seed_is_idempotent(db):

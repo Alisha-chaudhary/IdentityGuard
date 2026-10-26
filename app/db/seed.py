@@ -35,6 +35,11 @@ RESOURCES = [
         "platform",
         "IdentityGuard platform administration",
     ),
+    (
+        "vault-secret",
+        "application",
+        "Vault synthetic secret access",
+    ),
 ]
 
 
@@ -73,6 +78,9 @@ PERMISSIONS = [
     ("IdentityGuard", "pam.checkout"),
     ("IdentityGuard", "pam.revoke"),
     ("IdentityGuard", "reports.read"),
+
+    # Vault synthetic secret access
+    ("vault-secret", "read"),
 ]
 
 
@@ -135,6 +143,16 @@ ROLES = {
         False,
         [
             ("payments-system", "approve"),
+        ],
+    ),
+
+    # Vault synthetic secret access (non-privileged; provisioned through
+    # IdentityGuard's request/approval flow, never auto-assigned from LDAP).
+    "Vault Secret Access": (
+        "Read access to synthetic Vault secrets in the IdentityGuard lab",
+        False,
+        [
+            ("vault-secret", "read"),
         ],
     ),
 
