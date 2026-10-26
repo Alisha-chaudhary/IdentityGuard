@@ -9,6 +9,7 @@ from app.api.access_requests import router as access_requests_router
 from app.api.access_reviews import router as access_reviews_router
 from app.api.audit import router as audit_router
 from app.api.jml import router as jml_router
+from app.api.ldap import router as ldap_router
 from app.api.pam import router as pam_router
 from app.api.reports import router as reports_router
 from app.api.roles import router as roles_router
@@ -103,6 +104,7 @@ app.include_router(access_reviews_router)
 app.include_router(pam_router)
 app.include_router(reports_router)
 app.include_router(vault_router)
+app.include_router(ldap_router)
 
 
 @app.get("/health")
