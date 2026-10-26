@@ -37,24 +37,35 @@ class LoginResponse(BaseModel):
 
 @router.post("/login", response_model=LoginResponse)
 def login(
-    http_request: Request,
-    request: LoginRequest,
+    request: Request,
+    login_request: LoginRequest,
     db: Session = Depends(get_db),
 ) -> LoginResponse:
     # Rate limit before authentication so an unreachable/slow credential
     # check cannot be used to amplify request volume.
-    client_host = http_request.client.host if http_request.client else "unknown"
-    if not _login_rate_limiter.allow(f"login:{client_host}"):
+    client_ip = request.client.host if request.client else "unknown"
+    if not _login_rate_limiter.allow(f"login:{client_ip}"):
+        record_event(
+            db,
+            actor=login_request.username,
+            event_type=EventType.ACCESS_DENIED,
+            target=f"ip:{client_ip}",
+            action="login",
+            result=Result.FAILURE,
+            reason="Login rate limit exceeded",
+        )
+        db.commit()
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many login attempts. Try again later.",
+            detail="Too many login attempts",
+        )
         )
 
     try:
         token = authenticate(
             db,
-            request.username,
-            request.password,
+            login_request.username,
+            login_request.password,
         )
     except AuthenticationError:
         raise HTTPException(

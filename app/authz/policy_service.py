@@ -32,6 +32,7 @@ def _get_active_permissions(db, actor):
 
     return get_active_permissions(db, actor)
 
+
 POLICY_PATH = (
     Path(__file__).resolve().parents[1] / "policies" / "identityguard_policy.json"
 )
@@ -66,7 +67,11 @@ def can_assign_role_with_policy(db: Session, actor: User, target: User, role: Ro
     """Policy-driven role assignment decision.
 
     Returns only the boolean decision. A DB-backed audit event is recorded
-    when the audit service is available.
+    for every decision using a valid audit result value.
+
+    Fail-closed: if recording the audit event fails, the transaction is
+    rolled back and the error propagates so the caller denies the assignment
+    instead of granting it.
     """
     decision: Decision = evaluate_policy(
         _load_policy(),
@@ -82,10 +87,10 @@ def can_assign_role_with_policy(db: Session, actor: User, target: User, role: Ro
         },
     )
 
-    try:
-        from app.audit.service import record_event
-        from app.audit.events import EventType
+    from app.audit.service import record_event
+    from app.audit.events import EventType
 
+    try:
         record_event(
             db,
             actor=str(actor.id),

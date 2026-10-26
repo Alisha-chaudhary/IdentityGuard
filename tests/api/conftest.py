@@ -79,3 +79,14 @@ def make_role_with_permissions(db, name: str, actions: list[str], privileged=Fal
 def grant(db, username: str, role: Role) -> None:
     db.add(UserRole(user_id=user_by_name(db, username).id, role_id=role.id))
     db.commit()
+
+
+@pytest.fixture(autouse=True)
+def _reset_login_rate_limiter():
+    """Reset the in-memory login rate limiter around every API test so
+    one test's login attempts cannot rate-limit another test."""
+    from app.core.rate_limit import login_rate_limiter
+
+    login_rate_limiter.reset()
+    yield
+    login_rate_limiter.reset()
