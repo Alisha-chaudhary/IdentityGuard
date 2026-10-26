@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.audit.events import EventType, Result
 from app.audit.service import record_event
 from app.db.models import (
+    Department,
     DirectoryGroupMapping,
     DirectorySyncChange,
     DirectorySyncRun,
@@ -151,8 +152,26 @@ class DirectorySynchronizer:
         self.report = SyncReport(run_id=_new_run_id(), mode=mode)
 
     # ------------------------------------------------------------------
-    # Public entry point
+    # Public entry points
     # ------------------------------------------------------------------
+
+    @classmethod
+    def apply(
+        cls,
+        db: Session,
+        ldap_client: LdapClient,
+    ) -> SyncReport:
+        """Run a synchronization cycle in apply mode.
+
+        Requires explicit operator action: the caller must pass an
+        LDAP client that is already opened and bound. Applies approved
+        changes to local users and role assignments. Revalidates
+        preconditions before applying any change.
+
+        Returns a SyncReport describing all applied changes.
+        """
+        sync = cls(db, ldap_client, mode=MODE_APPLY)
+        return sync.synchronize()
 
     def synchronize(self) -> SyncReport:
         """Run a full synchronization cycle.
@@ -257,7 +276,9 @@ class DirectorySynchronizer:
                 is_new_identity = match_result["is_new"]
 
                 if is_new_identity:
-                    self._handle_new_identity(directory_user)
+                    self._handle_new_identity(
+                        directory_user, local_users, user_role_set
+                    )
                     continue
 
                 # Existing identity: check attribute changes and group membership.
@@ -446,24 +467,78 @@ class DirectorySynchronizer:
         self,
         directory_user: DirectoryUser,
         match_result: dict,
-        local_user_roles: dict[int, UserRole],
+        local_user_roles: list[UserRole],
         user_role_set: set[tuple[int, int]],
     ) -> None:
         """Directory account is explicitly disabled.
 
-        Propose removal of mapped local access. Do not delete the local
-        user or erase audit history.
+        In dry-run mode: propose removal of mapped local access.
+        In apply mode: set the local user status to DISABLED and remove
+        mapped role assignments. Do not delete the local user or erase
+        audit history.
         """
         local_user = match_result["local_user"]
         external_id = match_result["external_id"]
 
         # Identify roles that would be removed.
         roles_to_remove: list[Role] = []
+        roles_to_keep: list[Role] = []
         for ur in local_user_roles:
             if ur.user_id == local_user.id:
                 role = self.db.get(Role, ur.role_id)
                 if role is not None:
                     roles_to_remove.append(role)
+
+        if self.mode == MODE_APPLY:
+            # Disable the local user account.
+            local_user.status = "DISABLED"
+            self.db.flush()
+
+            # Remove mapped role assignments.
+            removed_count = 0
+            for ur in list(local_user_roles):
+                if ur.user_id == local_user.id:
+                    self.db.delete(ur)
+                    removed_count += 1
+            self.db.flush()
+
+            self.report.add_change(
+                change_type=CHANGE_SKIP_DISABLED,
+                outcome=OUTCOME_APPLIED,
+                external_id=external_id,
+                local_user_id=local_user.id,
+                reason=(
+                    f"Applied: directory account {directory_user.uid} is "
+                    f"disabled; local user set to DISABLED and "
+                    f"{removed_count} role assignment(s) removed"
+                ),
+            )
+            self._audit(
+                actor="system",
+                event_type=EventType.USER_UPDATED,
+                target=f"ldap:uid:{directory_user.uid}",
+                action="disable_access",
+                result=Result.SUCCESS,
+                reason=(
+                    f"Local user {directory_user.uid} set to DISABLED; "
+                    f"{removed_count} role assignment(s) removed due to "
+                    "directory account being disabled"
+                ),
+                correlation_id=self.report.run_id,
+            )
+            self._audit(
+                actor="system",
+                event_type=EventType.DIRECTORY_CHANGE_APPLIED,
+                target=f"ldap:uid:{directory_user.uid}",
+                action="disable_access",
+                result=Result.SUCCESS,
+                reason=(
+                    f"Applied directory change: disabled local user "
+                    f"{directory_user.uid}"
+                ),
+                correlation_id=self.report.run_id,
+            )
+            return
 
         self.report.disabled_accounts.append(
             {
@@ -499,12 +574,15 @@ class DirectorySynchronizer:
     def _handle_new_identity(
         self,
         directory_user: DirectoryUser,
+        local_users: dict[int, User],
+        user_role_set: set[tuple[int, int]],
     ) -> None:
         """A directory identity with no local match.
 
-        Propose creation of a local user record. No roles are assigned
-        until an explicit group-to-role mapping exists and an operator
-        approves the change.
+        In dry-run mode: propose creation of a local user record.
+        In apply mode: create the local user record and ExternalIdentity
+        mapping. No roles are assigned until an explicit group-to-role
+        mapping exists and group membership is processed.
         """
         self.report.new_identities.append(
             {
@@ -515,6 +593,85 @@ class DirectorySynchronizer:
                 "dn": directory_user.dn,
             }
         )
+
+        if self.mode == MODE_APPLY:
+            # Create the local user record.
+            dept = self.db.scalars(select(Department)).first()
+            if dept is None:
+                dept = Department(name="LDAP Synced")
+                self.db.add(dept)
+                self.db.flush()
+
+            local_user = User(
+                employee_id=f"LDAP-{directory_user.uid}",
+                username=directory_user.uid,
+                full_name=directory_user.cn or directory_user.uid,
+                email=directory_user.mail or f"{directory_user.uid}@ldap.example.test",
+                department_id=dept.id,
+                status="ACTIVE",
+            )
+            self.db.add(local_user)
+            self.db.flush()
+
+            # Create the external identity mapping.
+            ei = ExternalIdentity(
+                provider="ldap",
+                external_id=directory_user.entry_uuid,
+                local_user_id=local_user.id,
+                dn=directory_user.dn,
+                username=directory_user.uid,
+                last_seen_at=_utcnow(),
+                sync_status="matched",
+            )
+            self.db.add(ei)
+            self.db.flush()
+
+            # Register the new user in local state so group processing can find it.
+            local_users[local_user.id] = local_user
+
+            self.report.add_change(
+                change_type=CHANGE_CREATE_USER,
+                outcome=OUTCOME_APPLIED,
+                external_id=directory_user.entry_uuid,
+                local_user_id=local_user.id,
+                proposed_state=_json_dumps(
+                    {
+                        "uid": directory_user.uid,
+                        "cn": directory_user.cn,
+                        "mail": directory_user.mail,
+                    }
+                ),
+                reason=(
+                    f"Applied: created local user {directory_user.uid} "
+                    f"(entryUUID={directory_user.entry_uuid})"
+                ),
+            )
+            self._audit(
+                actor="system",
+                event_type=EventType.USER_CREATED,
+                target=f"ldap:uid:{directory_user.uid}",
+                action="create_user",
+                result=Result.SUCCESS,
+                reason=(
+                    f"Created local user {directory_user.uid} from LDAP "
+                    f"(entryUUID={directory_user.entry_uuid})"
+                ),
+                correlation_id=self.report.run_id,
+            )
+            self._audit(
+                actor="system",
+                event_type=EventType.DIRECTORY_CHANGE_APPLIED,
+                target=f"ldap:uid:{directory_user.uid}",
+                action="create_user",
+                result=Result.SUCCESS,
+                reason=(
+                    f"Applied directory change: created local user "
+                    f"{directory_user.uid}"
+                ),
+                correlation_id=self.report.run_id,
+            )
+            return
+
         self.report.add_change(
             change_type=CHANGE_CREATE_USER,
             outcome=OUTCOME_PROPOSED,
@@ -553,6 +710,8 @@ class DirectorySynchronizer:
 
         Changes to username or email are treated as possible identity
         management events, not proof of a different person.
+
+        In apply mode: update the local user's full_name and email.
         """
         changes = []
         if directory_user.cn is not None and directory_user.cn != local_user.full_name:
@@ -573,6 +732,55 @@ class DirectorySynchronizer:
                     "changes": changes,
                 }
             )
+
+            if self.mode == MODE_APPLY:
+                previous = _json_dumps(
+                    {"full_name": local_user.full_name, "email": local_user.email}
+                )
+                local_user.full_name = directory_user.cn or local_user.full_name
+                local_user.email = directory_user.mail or local_user.email
+                self.db.flush()
+
+                self.report.add_change(
+                    change_type=CHANGE_ASSIGN_ROLE,  # attribute change, no role change
+                    outcome=OUTCOME_APPLIED,
+                    external_id=directory_user.entry_uuid,
+                    local_user_id=local_user.id,
+                    previous_state=previous,
+                    proposed_state=_json_dumps(
+                        {
+                            "full_name": local_user.full_name,
+                            "email": local_user.email,
+                        }
+                    ),
+                    reason="; ".join(changes),
+                )
+                self._audit(
+                    actor="system",
+                    event_type=EventType.USER_UPDATED,
+                    target=f"ldap:uid:{directory_user.uid}",
+                    action="update_attributes",
+                    result=Result.SUCCESS,
+                    reason=(
+                        f"Updated attributes for {directory_user.uid}: "
+                        f"{'; '.join(changes)}"
+                    ),
+                    correlation_id=self.report.run_id,
+                )
+                self._audit(
+                    actor="system",
+                    event_type=EventType.DIRECTORY_CHANGE_APPLIED,
+                    target=f"ldap:uid:{directory_user.uid}",
+                    action="update_attributes",
+                    result=Result.SUCCESS,
+                    reason=(
+                        f"Applied directory change: updated attributes "
+                        f"for {directory_user.uid}"
+                    ),
+                    correlation_id=self.report.run_id,
+                )
+                return
+
             self.report.add_change(
                 change_type=CHANGE_ASSIGN_ROLE,  # attribute change, no role change
                 outcome=OUTCOME_PROPOSED,
@@ -601,11 +809,14 @@ class DirectorySynchronizer:
     ) -> None:
         """Check directory group membership against mapped local roles.
 
-        For each mapped group the user is a member of, propose assigning
-        the mapped role (if not already assigned). For each mapped group
-        the user is no longer a member of, propose removing the role.
+        For each mapped group the user is a member of, assign the mapped
+        role (if not already assigned). For each mapped group the user
+        is no longer a member of, remove the role.
 
-        Privileged roles are never auto-assigned.
+        In dry-run mode: changes are proposed only.
+        In apply mode: UserRole records are created or deleted.
+
+        Privileged roles are never auto-assigned via directory mapping.
         """
         # Build set of group DNs the user is currently a member of.
         user_group_dns: set[str] = set()
@@ -640,30 +851,79 @@ class DirectorySynchronizer:
                         "action": "assign",
                     }
                 )
-                self.report.add_change(
-                    change_type=CHANGE_ASSIGN_ROLE,
-                    outcome=OUTCOME_PROPOSED,
-                    external_id=directory_user.entry_uuid,
-                    local_user_id=local_user.id,
-                    target_role_id=role.id,
-                    proposed_state=_json_dumps({"role": role.name}),
-                    reason=(
-                        f"Directory group {mapping.group_name} maps to role "
-                        f"{role.name}; user {directory_user.uid} is a member"
-                    ),
-                )
-                self._audit(
-                    actor="system",
-                    event_type=EventType.DIRECTORY_CHANGE_PROPOSED,
-                    target=f"ldap:uid:{directory_user.uid}",
-                    action="assign_role",
-                    result=Result.SUCCESS,
-                    reason=(
-                        f"Propose assigning role {role.name} to "
-                        f"{directory_user.uid} via group {mapping.group_name}"
-                    ),
-                    correlation_id=self.report.run_id,
-                )
+
+                if self.mode == MODE_APPLY:
+                    user_role = UserRole(
+                        user_id=local_user.id,
+                        role_id=role.id,
+                    )
+                    self.db.add(user_role)
+                    self.db.flush()
+                    # Refresh the role set so subsequent checks see the new assignment.
+                    user_role_set.add((local_user.id, role.id))
+
+                    self.report.add_change(
+                        change_type=CHANGE_ASSIGN_ROLE,
+                        outcome=OUTCOME_APPLIED,
+                        external_id=directory_user.entry_uuid,
+                        local_user_id=local_user.id,
+                        target_role_id=role.id,
+                        proposed_state=_json_dumps({"role": role.name}),
+                        reason=(
+                            f"Applied: directory group {mapping.group_name} "
+                            f"maps to role {role.name}; user {directory_user.uid} "
+                            f"is a member"
+                        ),
+                    )
+                    self._audit(
+                        actor="system",
+                        event_type=EventType.ROLE_ASSIGNED,
+                        target=f"ldap:uid:{directory_user.uid}",
+                        action="assign_role",
+                        result=Result.SUCCESS,
+                        reason=(
+                            f"Assigned role {role.name} to {directory_user.uid} "
+                            f"via LDAP group {mapping.group_name}"
+                        ),
+                        correlation_id=self.report.run_id,
+                    )
+                    self._audit(
+                        actor="system",
+                        event_type=EventType.DIRECTORY_CHANGE_APPLIED,
+                        target=f"ldap:uid:{directory_user.uid}",
+                        action="assign_role",
+                        result=Result.SUCCESS,
+                        reason=(
+                            f"Applied directory change: assigned role "
+                            f"{role.name} to {directory_user.uid}"
+                        ),
+                        correlation_id=self.report.run_id,
+                    )
+                else:
+                    self.report.add_change(
+                        change_type=CHANGE_ASSIGN_ROLE,
+                        outcome=OUTCOME_PROPOSED,
+                        external_id=directory_user.entry_uuid,
+                        local_user_id=local_user.id,
+                        target_role_id=role.id,
+                        proposed_state=_json_dumps({"role": role.name}),
+                        reason=(
+                            f"Directory group {mapping.group_name} maps to role "
+                            f"{role.name}; user {directory_user.uid} is a member"
+                        ),
+                    )
+                    self._audit(
+                        actor="system",
+                        event_type=EventType.DIRECTORY_CHANGE_PROPOSED,
+                        target=f"ldap:uid:{directory_user.uid}",
+                        action="assign_role",
+                        result=Result.SUCCESS,
+                        reason=(
+                            f"Propose assigning role {role.name} to "
+                            f"{directory_user.uid} via group {mapping.group_name}"
+                        ),
+                        correlation_id=self.report.run_id,
+                    )
 
             elif not user_in_group and user_has_role:
                 # User is no longer in the mapped group but has the role.
@@ -676,30 +936,80 @@ class DirectorySynchronizer:
                         "action": "remove",
                     }
                 )
-                self.report.add_change(
-                    change_type=CHANGE_REMOVE_ROLE,
-                    outcome=OUTCOME_PROPOSED,
-                    external_id=directory_user.entry_uuid,
-                    local_user_id=local_user.id,
-                    target_role_id=role.id,
-                    previous_state=_json_dumps({"role": role.name}),
-                    reason=(
-                        f"Directory group {mapping.group_name} maps to role "
-                        f"{role.name}; user {directory_user.uid} is no longer a member"
-                    ),
-                )
-                self._audit(
-                    actor="system",
-                    event_type=EventType.DIRECTORY_CHANGE_PROPOSED,
-                    target=f"ldap:uid:{directory_user.uid}",
-                    action="remove_role",
-                    result=Result.SUCCESS,
-                    reason=(
-                        f"Propose removing role {role.name} from "
-                        f"{directory_user.uid} via group {mapping.group_name}"
-                    ),
-                    correlation_id=self.report.run_id,
-                )
+
+                if self.mode == MODE_APPLY:
+                    removed = self.db.execute(
+                        __import__("sqlalchemy", fromlist=["delete"]).delete(
+                            UserRole
+                        ).where(
+                            UserRole.user_id == local_user.id,
+                            UserRole.role_id == role.id,
+                        )
+                    )
+                    self.db.flush()
+
+                    self.report.add_change(
+                        change_type=CHANGE_REMOVE_ROLE,
+                        outcome=OUTCOME_APPLIED,
+                        external_id=directory_user.entry_uuid,
+                        local_user_id=local_user.id,
+                        target_role_id=role.id,
+                        previous_state=_json_dumps({"role": role.name}),
+                        reason=(
+                            f"Applied: directory group {mapping.group_name} "
+                            f"maps to role {role.name}; user {directory_user.uid} "
+                            f"is no longer a member"
+                        ),
+                    )
+                    self._audit(
+                        actor="system",
+                        event_type=EventType.ROLE_REMOVED,
+                        target=f"ldap:uid:{directory_user.uid}",
+                        action="remove_role",
+                        result=Result.SUCCESS,
+                        reason=(
+                            f"Removed role {role.name} from {directory_user.uid} "
+                            f"via LDAP group {mapping.group_name}"
+                        ),
+                        correlation_id=self.report.run_id,
+                    )
+                    self._audit(
+                        actor="system",
+                        event_type=EventType.DIRECTORY_CHANGE_APPLIED,
+                        target=f"ldap:uid:{directory_user.uid}",
+                        action="remove_role",
+                        result=Result.SUCCESS,
+                        reason=(
+                            f"Applied directory change: removed role "
+                            f"{role.name} from {directory_user.uid}"
+                        ),
+                        correlation_id=self.report.run_id,
+                    )
+                else:
+                    self.report.add_change(
+                        change_type=CHANGE_REMOVE_ROLE,
+                        outcome=OUTCOME_PROPOSED,
+                        external_id=directory_user.entry_uuid,
+                        local_user_id=local_user.id,
+                        target_role_id=role.id,
+                        previous_state=_json_dumps({"role": role.name}),
+                        reason=(
+                            f"Directory group {mapping.group_name} maps to role "
+                            f"{role.name}; user {directory_user.uid} is no longer a member"
+                        ),
+                    )
+                    self._audit(
+                        actor="system",
+                        event_type=EventType.DIRECTORY_CHANGE_PROPOSED,
+                        target=f"ldap:uid:{directory_user.uid}",
+                        action="remove_role",
+                        result=Result.SUCCESS,
+                        reason=(
+                            f"Propose removing role {role.name} from "
+                            f"{directory_user.uid} via group {mapping.group_name}"
+                        ),
+                        correlation_id=self.report.run_id,
+                    )
 
     def _handle_missing_entry(
         self,
