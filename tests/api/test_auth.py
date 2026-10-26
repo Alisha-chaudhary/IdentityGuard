@@ -170,6 +170,40 @@ def test_login_wrong_password_returns_generic_401(db):
         teardown_client()
 
 
+def test_login_is_rate_limited(db):
+    """Login attempts per client IP are rate limited separately from account
+    lockout. Successful logins keep the account unlocked, so the 429 comes
+    from the rate limiter alone."""
+    create_test_user(db)
+    client = make_client(db)
+
+    try:
+        for _ in range(10):
+            response = client.post(
+                "/auth/login",
+                json={
+                    "username": "test.user",
+                    "password": "StrongPassword!2026",
+                },
+            )
+            assert response.status_code == 200
+
+        response = client.post(
+            "/auth/login",
+            json={
+                "username": "test.user",
+                "password": "StrongPassword!2026",
+            },
+        )
+        assert response.status_code == 429
+        assert (
+            response.json()["detail"]
+            == "Too many login attempts. Try again later."
+        )
+    finally:
+        teardown_client()
+
+
 def test_unknown_user_returns_same_generic_401(db):
     create_test_user(db)
     client = make_client(db)
