@@ -49,6 +49,8 @@ from app.ldap.sync import (
     CHANGE_SKIP_NOOP,
     DirectorySynchronizer,
     MODE_DRY_RUN,
+    MODE_APPLY,
+    OUTCOME_APPLIED,
     OUTCOME_PROPOSED,
     OUTCOME_SKIPPED,
 )
@@ -757,6 +759,358 @@ def test_sync_records_external_identity_proposed(db):
     assert (
         db.scalars(select(User).where(User.username == "brandnew.user")).first() is None
     )
+
+
+# ------------------------------------------------------------------
+# Apply mode tests
+# ------------------------------------------------------------------
+
+
+def test_apply_creates_new_user(db):
+    """Apply mode should create a local user for a new directory identity."""
+    directory_user = make_directory_user(
+        uid="apply.new.user", entry_uuid="uuid-apply-new-1", cn="Apply New User", mail="apply.new@example.test"
+    )
+    mock_ldap = MockLdapClient(users=[directory_user], groups=[])
+
+    sync = DirectorySynchronizer.apply(db, mock_ldap)
+    report = sync
+
+    # A create_user change should be applied.
+    create_changes = [
+        c for c in report.changes if c["change_type"] == CHANGE_CREATE_USER
+    ]
+    assert len(create_changes) == 1
+    assert create_changes[0]["outcome"] == OUTCOME_APPLIED
+
+    # Local user should exist.
+    user = db.scalars(select(User).where(User.username == "apply.new.user")).first()
+    assert user is not None
+    assert user.full_name == "Apply New User"
+    assert user.email == "apply.new@example.test"
+
+    # ExternalIdentity should exist.
+    ei = db.scalars(
+        select(ExternalIdentity).where(ExternalIdentity.external_id == "uuid-apply-new-1")
+    ).first()
+    assert ei is not None
+    assert ei.local_user_id == user.id
+
+
+def test_apply_assigns_role_from_group_mapping(db):
+    """Apply mode should assign a role when user is in a mapped LDAP group."""
+    local_user = seed_local_user(
+        db,
+        username="apply.group.user",
+        employee_id="E020",
+        full_name="Apply Group User",
+        email="apply.group@example.test",
+        external_id="uuid-apply-group-1",
+        external_username="apply.group.user",
+    )
+    role = seed_local_role(db, "Finance Analyst", is_privileged=False)
+    seed_group_mapping(
+        db,
+        group_dn="cn=finance-analysts,ou=groups,dc=example,dc=test",
+        group_name="finance-analysts",
+        role=role,
+    )
+    directory_user = make_directory_user(
+        uid="apply.group.user", entry_uuid="uuid-apply-group-1"
+    )
+    directory_group = make_directory_group(
+        cn="finance-analysts",
+        entry_uuid="uuid-apply-group-1",
+        member_uids=["apply.group.user"],
+        dn="cn=finance-analysts,ou=groups,dc=example,dc=test",
+    )
+    mock_ldap = MockLdapClient(
+        users=[directory_user], groups=[directory_group]
+    )
+
+    sync = DirectorySynchronizer.apply(db, mock_ldap)
+    report = sync
+
+    # A role assignment change should be applied.
+    assign_changes = [
+        c
+        for c in report.changes
+        if c["change_type"] == CHANGE_ASSIGN_ROLE and c["target_role_id"] == role.id
+    ]
+    assert len(assign_changes) == 1
+    assert assign_changes[0]["outcome"] == OUTCOME_APPLIED
+
+    # UserRole should exist.
+    ur = db.scalars(
+        select(UserRole).where(
+            UserRole.user_id == local_user.id,
+            UserRole.role_id == role.id,
+        )
+    ).first()
+    assert ur is not None
+
+
+def test_apply_does_not_assign_privileged_role(db):
+    """Apply mode must never assign a privileged role via directory mapping."""
+    local_user = seed_local_user(
+        db,
+        username="apply.priv.user",
+        employee_id="E021",
+        full_name="Apply Priv User",
+        email="apply.priv@example.test",
+        external_id="uuid-apply-priv-1",
+        external_username="apply.priv.user",
+    )
+    priv_role = seed_local_role(db, "Database Administrator", is_privileged=True)
+    seed_group_mapping(
+        db,
+        group_dn="cn=db-admins,ou=groups,dc=example,dc=test",
+        group_name="db-admins",
+        role=priv_role,
+    )
+    directory_user = make_directory_user(
+        uid="apply.priv.user", entry_uuid="uuid-apply-priv-1"
+    )
+    directory_group = make_directory_group(
+        cn="db-admins",
+        entry_uuid="uuid-apply-group-priv",
+        member_uids=["apply.priv.user"],
+        dn="cn=db-admins,ou=groups,dc=example,dc=test",
+    )
+    mock_ldap = MockLdapClient(
+        users=[directory_user], groups=[directory_group]
+    )
+
+    sync = DirectorySynchronizer.apply(db, mock_ldap)
+    report = sync
+
+    # No role assignment changes for the privileged role.
+    assign_changes = [
+        c
+        for c in report.changes
+        if c["change_type"] == CHANGE_ASSIGN_ROLE
+        and c["target_role_id"] == priv_role.id
+    ]
+    assert len(assign_changes) == 0
+
+    # No UserRole for the privileged role.
+    ur = db.scalars(
+        select(UserRole).where(
+            UserRole.user_id == local_user.id,
+            UserRole.role_id == priv_role.id,
+        )
+    ).first()
+    assert ur is None
+
+
+def test_apply_removes_role_when_group_membership_removed(db):
+    """Apply mode should remove a role when user leaves a mapped LDAP group."""
+    local_user = seed_local_user(
+        db,
+        username="apply.leaving.user",
+        employee_id="E022",
+        full_name="Apply Leaving User",
+        email="apply.leaving@example.test",
+        external_id="uuid-apply-leaving-1",
+        external_username="apply.leaving.user",
+    )
+    role = seed_local_role(db, "HR Analyst", is_privileged=False)
+    seed_group_mapping(
+        db,
+        group_dn="cn=hr-team,ou=groups,dc=example,dc=test",
+        group_name="hr-team",
+        role=role,
+    )
+    seed_user_role(db, local_user, role)
+    directory_user = make_directory_user(
+        uid="apply.leaving.user", entry_uuid="uuid-apply-leaving-1"
+    )
+    # User is NOT in the group anymore.
+    directory_group = make_directory_group(
+        cn="hr-team",
+        entry_uuid="uuid-apply-group-hr",
+        member_uids=[],
+        dn="cn=hr-team,ou=groups,dc=example,dc=test",
+    )
+    mock_ldap = MockLdapClient(
+        users=[directory_user], groups=[directory_group]
+    )
+
+    sync = DirectorySynchronizer.apply(db, mock_ldap)
+    report = sync
+
+    # A role removal change should be applied.
+    remove_changes = [
+        c
+        for c in report.changes
+        if c["change_type"] == CHANGE_REMOVE_ROLE and c["target_role_id"] == role.id
+    ]
+    assert len(remove_changes) == 1
+    assert remove_changes[0]["outcome"] == OUTCOME_APPLIED
+
+    # UserRole should be gone.
+    ur = db.scalars(
+        select(UserRole).where(
+            UserRole.user_id == local_user.id,
+            UserRole.role_id == role.id,
+        )
+    ).first()
+    assert ur is None
+
+
+def test_apply_disables_user_when_directory_account_disabled(db):
+    """Apply mode should set local user to DISABLED when directory account is disabled."""
+    local_user = seed_local_user(
+        db,
+        username="apply.disabled.user",
+        employee_id="E023",
+        full_name="Apply Disabled User",
+        email="apply.disabled@example.test",
+        external_id="uuid-apply-disabled-1",
+        external_username="apply.disabled.user",
+    )
+    role = seed_local_role(db, "SOC Analyst", is_privileged=False)
+    seed_user_role(db, local_user, role)
+    directory_user = make_directory_user(
+        uid="apply.disabled.user",
+        entry_uuid="uuid-apply-disabled-1",
+        account_status="disabled",
+    )
+    mock_ldap = MockLdapClient(users=[directory_user], groups=[])
+
+    sync = DirectorySynchronizer.apply(db, mock_ldap)
+    report = sync
+
+    # A disabled change should be applied.
+    skip_changes = [
+        c
+        for c in report.changes
+        if c["change_type"] == CHANGE_SKIP_DISABLED
+    ]
+    assert len(skip_changes) == 1
+    assert skip_changes[0]["outcome"] == OUTCOME_APPLIED
+
+    # Local user should be DISABLED, not deleted.
+    db.refresh(local_user)
+    assert local_user.status == "DISABLED"
+
+    # Role assignment should be removed.
+    ur = db.scalars(
+        select(UserRole).where(
+            UserRole.user_id == local_user.id,
+            UserRole.role_id == role.id,
+        )
+    ).first()
+    assert ur is None
+
+
+def test_apply_unknown_group_grants_no_access(db):
+    """Apply mode must not grant roles for unknown LDAP groups."""
+    local_user = seed_local_user(
+        db,
+        username="apply.unknown.user",
+        employee_id="E024",
+        full_name="Apply Unknown User",
+        email="apply.unknown@example.test",
+        external_id="uuid-apply-unknown-1",
+        external_username="apply.unknown.user",
+    )
+    directory_user = make_directory_user(
+        uid="apply.unknown.user", entry_uuid="uuid-apply-unknown-1"
+    )
+    directory_group = make_directory_group(
+        cn="unknown-group",
+        entry_uuid="uuid-apply-unknown-group",
+        member_uids=["apply.unknown.user"],
+    )
+    mock_ldap = MockLdapClient(
+        users=[directory_user], groups=[directory_group]
+    )
+
+    sync = DirectorySynchronizer.apply(db, mock_ldap)
+    report = sync
+
+    # Unknown group should be listed.
+    assert "unknown-group" in report.unknown_groups
+
+    # No role assignment changes.
+    assign_changes = [
+        c for c in report.changes if c["change_type"] == CHANGE_ASSIGN_ROLE
+    ]
+    assert len(assign_changes) == 0
+
+
+def test_apply_is_idempotent(db):
+    """Running apply twice against unchanged data produces no duplicate assignments."""
+    local_user = seed_local_user(
+        db,
+        username="apply.idem.user",
+        employee_id="E025",
+        full_name="Apply Idem User",
+        email="apply.idem@example.test",
+        external_id="uuid-apply-idem-1",
+        external_username="apply.idem.user",
+    )
+    role = seed_local_role(db, "Finance Analyst", is_privileged=False)
+    seed_group_mapping(
+        db,
+        group_dn="cn=finance-analysts,ou=groups,dc=example,dc=test",
+        group_name="finance-analysts",
+        role=role,
+    )
+    directory_user = make_directory_user(
+        uid="apply.idem.user", entry_uuid="uuid-apply-idem-1"
+    )
+    directory_group = make_directory_group(
+        cn="finance-analysts",
+        entry_uuid="uuid-apply-group-idem",
+        member_uids=["apply.idem.user"],
+        dn="cn=finance-analysts,ou=groups,dc=example,dc=test",
+    )
+    mock_ldap = MockLdapClient(
+        users=[directory_user], groups=[directory_group]
+    )
+
+    # First apply run.
+    report1 = DirectorySynchronizer.apply(db, mock_ldap)
+
+    # Second apply run against the same data.
+    report2 = DirectorySynchronizer.apply(db, mock_ldap)
+
+    # User should have exactly one assignment to the role (no duplicates).
+    urs = db.scalars(
+        select(UserRole).where(
+            UserRole.user_id == local_user.id,
+            UserRole.role_id == role.id,
+        )
+    ).all()
+    assert len(urs) == 1
+
+    # Second run should not create duplicate applied changes.
+    # (It may report 0 applied because nothing changed, which is correct.)
+    assert report2.summary["applied"] <= report1.summary["applied"]
+
+
+def test_apply_records_applied_audit_events(db):
+    """Apply mode should record DIRECTORY_CHANGE_APPLIED audit events."""
+    directory_user = make_directory_user(
+        uid="apply.audit.user", entry_uuid="uuid-apply-audit-1"
+    )
+    mock_ldap = MockLdapClient(users=[directory_user], groups=[])
+
+    report = DirectorySynchronizer.apply(db, mock_ldap)
+
+    audit_events = db.scalars(select(AuditEvent)).all()
+
+    event_types = {e.event_type for e in audit_events}
+    assert EventType.DIRECTORY_SYNC_STARTED.value in event_types
+    assert EventType.DIRECTORY_SYNC_COMPLETED.value in event_types
+    assert EventType.DIRECTORY_CHANGE_APPLIED.value in event_types
+    assert EventType.USER_CREATED.value in event_types
+
+    # All audit events should use valid result values.
+    for e in audit_events:
+        assert e.result in (Result.SUCCESS.value, Result.DENIED.value, Result.FAILURE.value)
 
 
 if __name__ == "__main__":
