@@ -94,23 +94,37 @@ def _require_privileged_authority(
         try:
             from app.authz.policy_service import can_assign_role_with_policy
 
-            if not can_assign_role_with_policy(db, actor, target_user, role):
-                reason = (
-                    f"'{role.name}' is a privileged role; {action} requires "
-                    "role.assign_privileged"
-                )
-                _deny(
-                    db,
-                    actor=actor.username,
-                    target=role.name,
-                    action=action,
-                    reason=reason,
-                )
-                raise PrivilegedRoleAuthorizationError(reason)
-            return
+            allowed = can_assign_role_with_policy(db, actor, target_user, role)
         except Exception:
-            # Fallback keeps the legacy permission check authoritative.
-            pass
+            # Policy engine or audit failure: fail closed. Never fall back to
+            # the legacy permission check when policy authorization is enabled.
+            reason = (
+                f"'{role.name}' is a privileged role; {action} requires "
+                "role.assign_privileged"
+            )
+            _deny(
+                db,
+                actor=actor.username,
+                target=role.name,
+                action=action,
+                reason=reason + "; policy authorization unavailable",
+            )
+            raise PrivilegedRoleAuthorizationError(reason)
+
+        if not allowed:
+            reason = (
+                f"'{role.name}' is a privileged role; {action} requires "
+                "role.assign_privileged"
+            )
+            _deny(
+                db,
+                actor=actor.username,
+                target=role.name,
+                action=action,
+                reason=reason,
+            )
+            raise PrivilegedRoleAuthorizationError(reason)
+        return
 
     if not has_permission(db, actor, PRIVILEGED_ASSIGN_PERMISSION):
         reason = (
