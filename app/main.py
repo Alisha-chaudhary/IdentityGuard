@@ -13,6 +13,7 @@ from app.api.pam import router as pam_router
 from app.api.reports import router as reports_router
 from app.api.roles import router as roles_router
 from app.api.users import router as users_router
+from app.api.vault import router as vault_router
 from app.auth.routes import router as auth_router
 from app.config import CORS_ORIGINS
 from app.db.init_db import init_db
@@ -101,6 +102,7 @@ app.include_router(access_requests_router)
 app.include_router(access_reviews_router)
 app.include_router(pam_router)
 app.include_router(reports_router)
+app.include_router(vault_router)
 
 
 @app.get("/health")

@@ -17,9 +17,13 @@ from app.db.models import Permission, Resource, Role, RolePermission, User, User
 from tests.api.conftest import SEED_PASSWORD  # noqa: F401  (fixtures imported via conftest)
 
 # Routes that are intentionally reachable without a platform permission.
-PUBLIC = {("GET", "/health"), ("POST", "/auth/login")}
+PUBLIC = {("GET", "/health"), ("GET", "/vault/health"), ("POST", "/auth/login")}
 # Authenticated-only (any valid token), no permission.
-AUTHENTICATED_ONLY = {("GET", "/auth/me"), ("POST", "/auth/change-password")}
+AUTHENTICATED_ONLY = {
+    ("GET", "/auth/me"),
+    ("POST", "/auth/change-password"),
+    ("GET", "/vault/grant"),
+}
 
 
 def _permission_of(route: APIRoute) -> str | None:
@@ -39,7 +43,7 @@ def _permission_of(route: APIRoute) -> str | None:
 ROUTER_MODULES = [
     "app.auth.routes", "app.api.users", "app.api.roles", "app.api.audit",
     "app.api.jml", "app.api.access_requests", "app.api.access_reviews",
-    "app.api.pam", "app.api.reports",
+    "app.api.pam", "app.api.reports", "app.api.vault",
 ]
 
 
