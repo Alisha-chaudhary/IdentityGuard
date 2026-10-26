@@ -14,7 +14,7 @@ def _get_active_permissions(db, actor):
 
     return get_active_permissions(db, actor)
 
-POLICY_PATH = Path(__file__).resolve().parents[2] / "policies" / "identityguard_policy.json"
+POLICY_PATH = Path(__file__).resolve().parents[1] / "policies" / "identityguard_policy.json"
 
 
 def _load_policy() -> PolicyDocument:
@@ -42,11 +42,26 @@ def _resource(role: Role, target: User) -> Dict[str, Any]:
     }
 
 
+def _audit_result_for(decision: str) -> str:
+    """Map a policy engine decision to a valid AuditEvent.result value.
+
+    The audit_events table only accepts SUCCESS / DENIED / FAILURE, so the
+    engine's "allow" / "deny" strings must be translated before recording.
+    """
+    if decision == "allow":
+        return "SUCCESS"
+    return "DENIED"
+
+
 def can_assign_role_with_policy(db: Session, actor: User, target: User, role: Role) -> bool:
     """Policy-driven role assignment decision.
 
     Returns only the boolean decision. A DB-backed audit event is recorded
-    when the audit service is available.
+    for every decision using a valid audit result value.
+
+    Fail-closed: if recording the audit event fails, the transaction is
+    rolled back and the error propagates so the caller denies the assignment
+    instead of granting it.
     """
     decision: Decision = evaluate_policy(
         _load_policy(),
@@ -62,21 +77,23 @@ def can_assign_role_with_policy(db: Session, actor: User, target: User, role: Ro
         },
     )
 
-    try:
-        from app.audit.service import record_event
-        from app.audit.events import EventType
+    from app.audit.service import record_event
+    from app.audit.events import EventType
 
+    try:
         record_event(
             db,
             actor=str(actor.id),
             event_type=EventType.POLICY_DECISION,
             target=f"user:{target.id}",
             action="role.assign",
-            result=decision.decision,
+            result=_audit_result_for(decision.decision),
             reason=f"{decision.reason}; matched={decision.matched_rules}",
         )
     except Exception:
-        # Shadow/non-audit environments should not fail authorization.
-        pass
+        # An audit-write failure must not silently grant privileged access.
+        # Roll back anything touched here and deny.
+        db.rollback()
+        raise
 
     return decision.decision == "allow"

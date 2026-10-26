@@ -1,11 +1,12 @@
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, get_db
 from app.audit.events import EventType, Result
 from app.audit.service import record_event
 from app.auth.service import AuthenticationError, authenticate
+from app.core.rate_limit import login_rate_limiter
 from app.core.security import (
     WeakPasswordError,
     check_password_strength,
@@ -30,14 +31,34 @@ class LoginResponse(BaseModel):
 
 @router.post("/login", response_model=LoginResponse)
 def login(
-    request: LoginRequest,
+    request: Request,
+    login_request: LoginRequest,
     db: Session = Depends(get_db),
 ) -> LoginResponse:
+    # Per-IP login rate limit, checked before authentication so a burst of
+    # invalid attempts cannot exhaust the application or aid enumeration.
+    client_ip = request.client.host if request.client else "unknown"
+    if not login_rate_limiter.check(client_ip):
+        record_event(
+            db,
+            actor=login_request.username,
+            event_type=EventType.ACCESS_DENIED,
+            target=f"ip:{client_ip}",
+            action="login",
+            result=Result.FAILURE,
+            reason="Login rate limit exceeded",
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts",
+        )
+
     try:
         token = authenticate(
             db,
-            request.username,
-            request.password,
+            login_request.username,
+            login_request.password,
         )
     except AuthenticationError:
         raise HTTPException(
