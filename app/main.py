@@ -24,6 +24,26 @@ logger = logging.getLogger("identityguard")
 # How often the background sweeper moves overdue PAM checkouts to EXPIRED.
 PAM_EXPIRY_SWEEP_SECONDS = 30
 
+# How many consecutive PAM expiry sweep failures are tolerated before /health
+# reports degraded. A single transient failure is not an outage; repeated
+# failures mean the privileged-access expiry process is not running reliably.
+PAM_EXPIRY_HEALTH_FAILURE_THRESHOLD = 3
+
+_pam_expiry_consecutive_failures = 0
+_pam_expiry_last_error: str | None = None
+
+
+def _record_pam_expiry_success() -> None:
+    global _pam_expiry_consecutive_failures, _pam_expiry_last_error
+    _pam_expiry_consecutive_failures = 0
+    _pam_expiry_last_error = None
+
+
+def _record_pam_expiry_failure(error: Exception) -> None:
+    global _pam_expiry_consecutive_failures, _pam_expiry_last_error
+    _pam_expiry_consecutive_failures += 1
+    _pam_expiry_last_error = str(error)
+
 
 def _sweep_expired_checkouts() -> int:
     with SessionLocal() as db:
@@ -34,7 +54,9 @@ async def _pam_expiry_loop() -> None:
     while True:
         try:
             await asyncio.to_thread(_sweep_expired_checkouts)
-        except Exception:  # never let the sweeper die
+            _record_pam_expiry_success()
+        except Exception as exc:  # never let the sweeper die
+            _record_pam_expiry_failure(exc)
             logger.exception("PAM expiry sweep failed")
         await asyncio.sleep(PAM_EXPIRY_SWEEP_SECONDS)
 
@@ -83,4 +105,12 @@ app.include_router(reports_router)
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "service": "identityguard"}
+    degraded = _pam_expiry_consecutive_failures >= PAM_EXPIRY_HEALTH_FAILURE_THRESHOLD
+    return {
+        "status": "degraded" if degraded else "ok",
+        "service": "identityguard",
+        "pam_expiry": {
+            "consecutive_failures": _pam_expiry_consecutive_failures,
+            "last_error": _pam_expiry_last_error,
+        },
+    }
