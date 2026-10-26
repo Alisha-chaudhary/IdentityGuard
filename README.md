@@ -86,6 +86,67 @@ The project combines a **Python/FastAPI backend**, **SQLAlchemy + SQLite**, and 
 | Rate limiting | Implemented on /auth/login (per-IP request window); account lockout is a separate per-account control |
 | Database migrations | Not implemented (create_all only; introduce Alembic or add new tables for schema changes) |
 | All workflows in frontend | Partial; several workflows are API-first |
+| LDAP directory synchronization | Implemented (Phase 4-6): read-only client, dry-run sync, controlled apply mode. No LDAP writes. |
+| Vault secret management | Implemented (Phase 7-8): read-only Vault client, KV v2 secrets engine, narrowly scoped policy, IdentityGuard approval workflow mediation. |
+
+---
+
+## LDAP Directory Synchronization (Phase 4-6)
+
+IdentityGuard can synchronize with an OpenLDAP directory in a controlled,
+read-first manner:
+
+1. **Read-only discovery** (`app/ldap/client.py`): Connects to LDAP,
+   searches users and groups, returns normalized records. Never writes to
+   LDAP.
+2. **Dry-run synchronization** (`app/ldap/sync.py`): Compares directory
+   records against local IdentityGuard records and produces a change
+   report. Default mode; no local changes.
+3. **Controlled apply** (`DirectorySynchronizer.apply()`): Explicit
+   operator action to apply approved changes (create users, assign/remove
+   roles, disable accounts). Privileged roles are never auto-assigned.
+
+New database tables (`external_identities`, `directory_group_mappings`,
+`directory_sync_runs`, `directory_sync_changes`) track the mapping between
+directory and local identities. All changes are audited.
+
+### LDAP environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `IDENTITYGUARD_LDAP_ENABLED` | `false` | Master switch for sync |
+| `IDENTITYGUARD_LDAP_URI` | `ldap://localhost:389` | LDAP server URI |
+| `IDENTITYGUARD_LDAP_BIND_DN` | `` | Read-only bind DN |
+| `IDENTITYGUARD_LDAP_BIND_PASSWORD` | `` | Read-only bind password (runtime only) |
+| `IDENTITYGUARD_LDAP_BASE_DN` | `dc=example,dc=test` | Search base |
+| `IDENTITYGUARD_LDAP_TIMEOUT` | `10` | Connection/operation timeout (seconds) |
+
+---
+
+## Vault Secret Management (Phase 7-8)
+
+HashiCorp Vault manages synthetic test secrets used in the lab:
+
+1. **Vault client** (`app/vault/client.py`): Read-only client using
+   Vault's HTTP API with token authentication. Never logs or returns the
+   Vault token.
+2. **Vault integration** (`app/vault/integration.py`): Connects
+   IdentityGuard's access request/approval workflow with Vault's own
+   policy enforcement. IdentityGuard verifies an active approval grant;
+   Vault independently enforces its policy. Secret values are never
+   stored in IdentityGuard's database, logs, or audit reasons.
+3. **API endpoints** (`app/api/vault.py`): `GET /vault/health`,
+   `GET /vault/grant`, `GET /vault/secret/{path}`.
+
+### Vault environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `IDENTITYGUARD_VAULT_ADDR` | `http://127.0.0.1:8200` | Vault server address |
+| `IDENTITYGUARD_VAULT_TOKEN` | `` | Vault token (runtime only, never committed) |
+| `IDENTITYGUARD_VAULT_SECRET_PATH` | `identityguard-lab/data/synthetic/test-secret` | Secret path |
+| `IDENTITYGUARD_VAULT_TIMEOUT` | `10` | Request timeout (seconds) |
+
 
 ## Run locally
 
@@ -175,6 +236,8 @@ These assets are reference-only. They are not a claim of production cluster oper
 - **Token revocation:** short-lived JWTs are issued with no server-side denylist; logout and compromise revocation are client-side/time-bound only.
 - **Policy engine:** used only for privileged role assignment, behind `IDENTITYGUARD_POLICY_AUTHZ` (default off). When enabled, policy decisions are authoritative and fail-closed; the legacy permission path runs only when policy is disabled or `target_user` is absent.
 - **Storage and schema changes:** SQLite without a migration framework. `create_all()` creates missing tables but does not add columns to existing tables; use Alembic or add new tables for LDAP/integration schema changes.
+- **LDAP synchronization:** read-only against LDAP (no account creation, password changes, or group modifications). Dry-run by default; apply mode requires explicit operator action. Identity matching uses LDAP entryUUID; username matching is a candidate link only, never auto-merged. Disabled directory accounts result in local user being set to DISABLED, not deleted. Missing directory entries are never interpreted as deletion.
+- **Vault integration:** Vault enforces its own policies independently; IdentityGuard approval does not substitute for Vault authorization. Vault tokens are never stored in IdentityGuard's database, logs, or audit reasons. Dev-mode Vault is used for the lab; not production-grade authentication.
 
 ## Why I am building it
 
