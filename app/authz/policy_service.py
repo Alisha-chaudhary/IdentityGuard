@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Dict
 
@@ -8,13 +9,32 @@ from sqlalchemy.orm import Session
 from app.authz.policy_engine import Decision, PolicyDocument, evaluate_policy, load_policy
 from app.db.models import Role, User
 
+logger = logging.getLogger("identityguard")
+
+
+def _audit_result(policy_decision: str) -> str:
+    """Map a policy engine decision to an audit result the database accepts.
+
+    The audit_events.result column is constrained to SUCCESS / DENIED /
+    FAILURE, while the policy engine emits lowercase "allow" / "deny".
+    """
+    if policy_decision == "deny":
+        return "DENIED"
+    if policy_decision == "allow":
+        return "SUCCESS"
+    # Any unexpected decision (e.g. engine misconfiguration) is treated as a
+    # processing failure rather than silently recorded as allow or deny.
+    return "FAILURE"
+
 
 def _get_active_permissions(db, actor):
     from app.authz.service import get_active_permissions
 
     return get_active_permissions(db, actor)
 
-POLICY_PATH = Path(__file__).resolve().parents[2] / "policies" / "identityguard_policy.json"
+POLICY_PATH = (
+    Path(__file__).resolve().parents[1] / "policies" / "identityguard_policy.json"
+)
 
 
 def _load_policy() -> PolicyDocument:
@@ -72,11 +92,16 @@ def can_assign_role_with_policy(db: Session, actor: User, target: User, role: Ro
             event_type=EventType.POLICY_DECISION,
             target=f"user:{target.id}",
             action="role.assign",
-            result=decision.decision,
+            result=_audit_result(decision.decision),
             reason=f"{decision.reason}; matched={decision.matched_rules}",
         )
     except Exception:
-        # Shadow/non-audit environments should not fail authorization.
-        pass
+        # Do not swallow an audit failure: roll back so the session stays
+        # usable, then fail closed. A privileged authorization decision must
+        # not be granted (or recorded as granted) when the audit trail that
+        # backs it cannot be written.
+        db.rollback()
+        logger.exception("Policy audit write failed; failing closed")
+        raise
 
     return decision.decision == "allow"

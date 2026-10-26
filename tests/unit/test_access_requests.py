@@ -1,7 +1,12 @@
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
-from app.iam.access_requests import SodConflictError
+from app.iam.access_requests import (
+    PrivilegedRoleAuthorizationError,
+    SodConflictError,
+    _require_privileged_authority,
+)
 from app.audit.events import EventType
 from app.db.models import AuditEvent
 from app.core.clock import FrozenClock, set_clock
@@ -587,3 +592,134 @@ def test_sod_conflict_blocks_provisioning_and_records_audit(db):
     assert event.actor == approver.username
     assert event.target == target.username
     assert event.result == "DENIED"
+
+
+def _make_privileged_setup(db):
+    department = create_department(db)
+    actor = create_user(db, department, "actor", "EMP200")
+    target = create_user(db, department, "target", "EMP201")
+    role = Role(name="Privileged Role", description="Test", is_privileged=True)
+    db.add(role)
+    db.flush()
+    return department, actor, target, role
+
+
+def test_policy_denial_does_not_fall_back_to_legacy_permission(db):
+    _, actor, target, role = _make_privileged_setup(db)
+
+    with (
+        patch("app.iam.access_requests.POLICY_AUTHZ_ENABLED", True),
+        patch(
+            "app.authz.policy_service.can_assign_role_with_policy",
+            return_value=False,
+        ),
+        patch(
+            "app.iam.access_requests.has_permission",
+            return_value=True,
+        ) as legacy_check,
+        patch("app.iam.access_requests._deny"),
+    ):
+        with pytest.raises(PrivilegedRoleAuthorizationError):
+            _require_privileged_authority(
+                db,
+                actor,
+                role,
+                "assign_role",
+                target_user=target,
+            )
+
+    # The legacy permission check must never be consulted once policy denies.
+    legacy_check.assert_not_called()
+
+
+def test_policy_allowance_skips_legacy_permission_check(db):
+    _, actor, target, role = _make_privileged_setup(db)
+
+    with (
+        patch("app.iam.access_requests.POLICY_AUTHZ_ENABLED", True),
+        patch(
+            "app.authz.policy_service.can_assign_role_with_policy",
+            return_value=True,
+        ),
+        patch(
+            "app.iam.access_requests.has_permission",
+            return_value=True,
+        ) as legacy_check,
+        patch("app.iam.access_requests._deny"),
+    ):
+        _require_privileged_authority(
+            db,
+            actor,
+            role,
+            "assign_role",
+            target_user=target,
+        )
+
+    legacy_check.assert_not_called()
+
+
+def test_policy_engine_failure_propagates_instead_of_falling_back(db):
+    _, actor, target, role = _make_privileged_setup(db)
+
+    with (
+        patch("app.iam.access_requests.POLICY_AUTHZ_ENABLED", True),
+        patch(
+            "app.authz.policy_service.can_assign_role_with_policy",
+            side_effect=RuntimeError("policy engine down"),
+        ),
+        patch(
+            "app.iam.access_requests.has_permission",
+            return_value=True,
+        ) as legacy_check,
+        patch("app.iam.access_requests._deny"),
+    ):
+        with pytest.raises(RuntimeError, match="policy engine down"):
+            _require_privileged_authority(
+                db,
+                actor,
+                role,
+                "assign_role",
+                target_user=target,
+            )
+
+    legacy_check.assert_not_called()
+
+
+def test_policy_disabled_still_uses_legacy_permission_check(db):
+    _, actor, target, role = _make_privileged_setup(db)
+
+    # POLICY_AUTHZ_ENABLED defaults to false; legacy check is authoritative.
+    with (
+        patch("app.iam.access_requests.POLICY_AUTHZ_ENABLED", False),
+        patch(
+            "app.iam.access_requests.has_permission",
+            return_value=True,
+        ) as legacy_check,
+        patch("app.iam.access_requests._deny"),
+    ):
+        _require_privileged_authority(
+            db,
+            actor,
+            role,
+            "assign_role",
+            target_user=target,
+        )
+    legacy_check.assert_called_once()
+
+    # Unauthorized actor is still denied when policy is disabled.
+    with (
+        patch("app.iam.access_requests.POLICY_AUTHZ_ENABLED", False),
+        patch(
+            "app.iam.access_requests.has_permission",
+            return_value=False,
+        ),
+        patch("app.iam.access_requests._deny"),
+    ):
+        with pytest.raises(PrivilegedRoleAuthorizationError):
+            _require_privileged_authority(
+                db,
+                actor,
+                role,
+                "assign_role",
+                target_user=target,
+            )
