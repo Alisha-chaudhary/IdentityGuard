@@ -1,11 +1,12 @@
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, get_db
 from app.audit.events import EventType, Result
 from app.audit.service import record_event
 from app.auth.service import AuthenticationError, authenticate
+from app.core.rate_limit import FixedWindowRateLimiter
 from app.core.security import (
     WeakPasswordError,
     check_password_strength,
@@ -16,6 +17,12 @@ from app.db.models import User, UserRole
 from app.authz.service import get_active_permissions
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
+
+# Login is rate limited per client IP. Account lockout (app/auth/service.py)
+# protects a specific account after 5 failed attempts; rate limiting protects
+# the endpoint itself from a single client grinding it. They are complementary
+# controls, not substitutes for each other.
+_login_rate_limiter = FixedWindowRateLimiter(max_requests=10, window_seconds=60)
 
 
 class LoginRequest(BaseModel):
@@ -30,9 +37,19 @@ class LoginResponse(BaseModel):
 
 @router.post("/login", response_model=LoginResponse)
 def login(
+    http_request: Request,
     request: LoginRequest,
     db: Session = Depends(get_db),
 ) -> LoginResponse:
+    # Rate limit before authentication so an unreachable/slow credential
+    # check cannot be used to amplify request volume.
+    client_host = http_request.client.host if http_request.client else "unknown"
+    if not _login_rate_limiter.allow(f"login:{client_host}"):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts. Try again later.",
+        )
+
     try:
         token = authenticate(
             db,
