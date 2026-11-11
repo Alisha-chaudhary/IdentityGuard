@@ -12,10 +12,12 @@ An IAM governance and access-management lab I built to learn how access is reque
 2. [Simulated PAM versus real PAM](#simulated-pam-versus-real-pam)
 3. [Try the demo](#try-the-demo)
 4. [Run it locally](#run-it-locally)
-5. [Things I learnt](#things-i-learnt)
-6. [Decisions I took](#decisions-i-took)
-7. [Security review and known limitations](#security-review-and-known-limitations)
-8. [Roadmap](#roadmap)
+5. [LDAP directory synchronization](#ldap-directory-synchronization-phase-4-6)
+6. [Vault secret management](#vault-secret-management-phase-7-8)
+7. [Things I learnt](#things-i-learnt)
+8. [Decisions I took](#decisions-i-took)
+9. [Security review and known limitations](#security-review-and-known-limitations)
+10. [Roadmap](#roadmap)
 
 ## What it does
 
@@ -190,6 +192,12 @@ I reviewed this project myself with Bandit and a manual read. The write-up is in
 - **Policy engine:** used only for privileged role assignment, behind `IDENTITYGUARD_POLICY_AUTHZ` (default off). When enabled, policy decisions are authoritative and fail-closed; the legacy permission path runs only when policy is disabled or `target_user` is absent.
 - **Storage and schema changes:** SQLite without a migration framework. `create_all()` creates missing tables but does not add columns to existing tables; use Alembic or add new tables for LDAP/integration schema changes.
 - **LDAP synchronization:** read-only against LDAP (no account creation, password changes, or group modifications). Dry-run by default; apply mode requires explicit operator action. Identity matching uses LDAP entryUUID; username matching is a candidate link only, never auto-merged. Disabled directory accounts result in local user being set to DISABLED, not deleted. Missing directory entries are never interpreted as deletion.
+- **LDAP synchronization:** Read-only against LDAP (no account creation,
+  password changes, or group modifications). Dry-run by default; apply mode
+  requires explicit operator authorization. Identity matching uses LDAP
+  entryUUID; username matching is a candidate link only, never auto-merged.
+  The current generic LDAP client does not infer disabled-account status.
+  Missing directory entries are never interpreted as deletion.
 - **Vault integration:** Vault enforces its own policies independently; IdentityGuard approval does not substitute for Vault authorization. Vault tokens are never stored in IdentityGuard's database, logs, or audit reasons. Dev-mode Vault is used for the lab; not production-grade authentication.
 
 Other limits are listed in [Simulated PAM versus real PAM](#simulated-pam-versus-real-pam).
