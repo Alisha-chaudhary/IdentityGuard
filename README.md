@@ -111,7 +111,7 @@ HashiCorp Vault manages synthetic test secrets used in the lab:
 | `IDENTITYGUARD_VAULT_TOKEN` | `` | Vault token (runtime only, never committed) |
 | `IDENTITYGUARD_VAULT_SECRET_PATH` | `identityguard-lab/data/synthetic/test-secret` | Secret path |
 | `IDENTITYGUARD_VAULT_TIMEOUT` | `10` | Request timeout (seconds) |
->>> feature/phase-9-documentation
+
 
 
 | Capability | IdentityGuard | Enterprise PAM platform |
@@ -122,7 +122,7 @@ HashiCorp Vault manages synthetic test secrets used in the lab:
 | Credential vaulting | Not built | Yes |
 | Automatic password rotation | Not built | Yes |
 | Session isolation and recording | Not built | Yes |
-| Directory integration (LDAP or AD) | Not built | Yes |
+| Directory integration | OpenLDAP integration implemented: read-only directory discovery and controlled synchronization into IdentityGuard; no LDAP writes. Active Directory integration is not implemented. | Yes |
 
 IdentityGuard teaches the governance and lifecycle side. It does not store or rotate real credentials and it does not broker sessions.
 
