@@ -38,3 +38,32 @@ export async function fetchReport(path, token) {
 
   return response.json();
 }
+
+export async function apiRequest(path, token, options = {}) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      Accept: "application/json",
+      Authorization: `Bearer ${token}`,
+      ...options.headers,
+    },
+  });
+
+  const payload =
+    response.status === 204
+      ? null
+      : await response.json().catch(() => null);
+
+  if (!response.ok) {
+    const detail = payload?.detail;
+    const message = typeof detail === "string"
+      ? detail
+      : `Request failed with status ${response.status}.`;
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
+  }
+
+  return payload;
+}

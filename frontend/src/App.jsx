@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import "./App.css";
 import Login from "./Login.jsx";
-import { fetchReport } from "./api.js";
+import { apiRequest, fetchReport } from "./api.js";
 
 const TOKEN_KEY = "identityguard.accessToken";
 const REPORT_PERMISSION = "IdentityGuard:reports.read";
@@ -73,6 +73,29 @@ const reportEndpoints = [
   ["audit", "/reports/audit-trail"],
 ];
 
+const reportCategories = [
+  {
+    heading: "Identity Governance",
+    reports: [
+      { key: "identities", label: "Identity Inventory" },
+      { key: "assignments", label: "Role Access Assignments" },
+      { key: "reviews", label: "Access Review Summary" },
+      { key: "requests", label: "Access Request History" },
+    ],
+  },
+  {
+    heading: "Privileged Access",
+    reports: [{ key: "pam", label: "PAM Activity" }],
+  },
+  {
+    heading: "Security and Compliance",
+    reports: [
+      { key: "audit", label: "Audit Trail" },
+      { key: "sod", label: "SoD Violations" },
+    ],
+  },
+];
+
 function getErrorMessage(error, fallback) {
   return error instanceof Error && error.message
     ? error.message
@@ -123,29 +146,81 @@ function getReviewCompletion(report) {
   return Math.round(((items - pending) / items) * 100);
 }
 
+function reasonInputFilled(requestId) {
+  const input = document.getElementById(`pam-reason-${requestId}`);
+  return Boolean(input && String(input.value ?? "").trim());
+}
+
+function reportTableColumns(reportKey) {
+  const columnsByReport = {
+    identities: ["IDENTITY", "DEPARTMENT", "STATUS", "ROLES"],
+    requests: ["ROLE", "REQUESTER", "TARGET", "STATUS", "REQUESTED"],
+    reviews: ["CYCLE", "STATUS", "ITEMS", "PENDING", "COMPLETION"],
+    assignments: ["USER", "ROLE", "DEPARTMENT", "STATUS", "PRIVILEGED"],
+    pam: ["REQUESTER", "ACCOUNT", "SAFE", "REQUEST STATUS", "CHECKOUT STATUS"],
+    audit: ["ACTOR", "TYPE", "ACTION", "RESULT", "TIME"],
+    sod: ["USER", "DEPARTMENT", "CONFLICTING ROLES", "DESCRIPTION"],
+  };
+  return columnsByReport[reportKey] || [];
+}
+
+function reportTableCells(reportKey, item) {
+  const cellsByReport = {
+    identities: () => [
+      item.full_name || item.username,
+      item.department || "—",
+      item.status || "—",
+      String(item.role_assignment_count ?? 0),
+    ],
+    requests: () => [
+      item.role_name || "Role request",
+      item.requester_username || "—",
+      item.target_username || "—",
+      item.status || "—",
+      formatDateTime(item.requested_at),
+    ],
+    reviews: () => [
+      item.name || "Access review",
+      item.status || "—",
+      String(item.total_count ?? 0),
+      String(item.pending_count ?? 0),
+      item.completion_percentage != null
+        ? `${Math.round(item.completion_percentage)}%`
+        : "—",
+    ],
+    assignments: () => [
+      item.username || "—",
+      item.role_name || "—",
+      item.department || "—",
+      item.assignment_status || "—",
+      item.is_privileged ? "Yes" : "No",
+    ],
+    pam: () => [
+      item.requester_username || "—",
+      `${item.account_name} · ${item.system_name}`,
+      item.safe_name || "—",
+      item.request_status || "—",
+      item.checkout_status || "—",
+    ],
+    audit: () => [
+      item.actor || "—",
+      item.event_type || "—",
+      item.action || "—",
+      getAuditStatus(item),
+      formatDateTime(item.timestamp),
+    ],
+    sod: () => [
+      item.username || "—",
+      item.department || "—",
+      (item.conflicting_roles ?? []).join(", ") || "—",
+      item.description || "—",
+    ],
+  };
+  return (cellsByReport[reportKey] || (() => ["—"]))();
+}
+
 async function accessReviewRequest(path, token, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: {
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      Authorization: `Bearer ${token}`,
-      ...options.headers,
-    },
-  });
-
-  const payload = response.status === 204 ? null : await response.json().catch(() => null);
-
-  if (!response.ok) {
-    const detail = payload?.detail;
-    const message = typeof detail === "string"
-      ? detail
-      : `Request failed with status ${response.status}.`;
-    const error = new Error(message);
-    error.status = response.status;
-    throw error;
-  }
-
-  return payload;
+  return apiRequest(path, token, options);
 }
 
 function App() {
@@ -177,6 +252,31 @@ function App() {
   const [decisionDrafts, setDecisionDrafts] = useState({});
   const [reviewActionLoading, setReviewActionLoading] = useState(false);
 
+  const [roles, setRoles] = useState([]);
+  const [rolesLoading, setRolesLoading] = useState(false);
+  const [rolesError, setRolesError] = useState("");
+
+  const [pamSafes, setPamSafes] = useState([]);
+  const [pamRequests, setPamRequests] = useState([]);
+  const [pamCheckouts, setPamCheckouts] = useState([]);
+  const [pamLoading, setPamLoading] = useState(false);
+  const [pamError, setPamError] = useState("");
+  const [pamSuccess, setPamSuccess] = useState("");
+
+  const [auditTrail, setAuditTrail] = useState(null);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditError, setAuditError] = useState("");
+  const [auditFilter, setAuditFilter] = useState({
+    event_type: "",
+    actor: "",
+    target: "",
+    correlation_id: "",
+  });
+
+  const [reportData, setReportData] = useState({});
+  const [reportLoading, setReportLoading] = useState({});
+  const [reportError, setReportError] = useState({});
+
   const sidebarMenuRef = useRef(null);
   const topMenuRef = useRef(null);
 
@@ -199,6 +299,12 @@ function App() {
   const canViewReviews = permissions.includes("IdentityGuard:access_review.view");
   const canDecideReviews = permissions.includes("IdentityGuard:access_review.decide");
   const canCompleteReviews = permissions.includes("IdentityGuard:access_review.complete");
+
+  const canReadRoles = permissions.includes("IdentityGuard:user.read");
+  const canRequestPam = permissions.includes("IdentityGuard:pam.request");
+  const canApprovePam = permissions.includes("IdentityGuard:pam.approve");
+  const canCheckoutPam = permissions.includes("IdentityGuard:pam.checkout");
+  const canRevokePam = permissions.includes("IdentityGuard:pam.revoke");
 
   const normalizedSearch = search.trim().toLowerCase();
 
@@ -508,6 +614,280 @@ function App() {
     return () => clearTimeout(timer);
   }, [token, currentUser, activePage, loadReviews]);
 
+  const loadRoles = useCallback(async () => {
+    if (!token || !currentUser || !canReadRoles) return;
+
+    setRolesLoading(true);
+    setRolesError("");
+    try {
+      const data = await fetchReport("/roles", token);
+      setRoles(Array.isArray(data) ? data : []);
+    } catch (error) {
+      if (error?.status === 401) {
+        localStorage.removeItem(TOKEN_KEY);
+        setToken(null);
+        setCurrentUser(null);
+        setDashboardData(null);
+        setAuthError("Your session expired. Please sign in again.");
+        return;
+      }
+      setRolesError(
+        error?.status === 403
+          ? "Your account does not have permission to view roles."
+          : getErrorMessage(error, "Unable to load roles.")
+      );
+    } finally {
+      setRolesLoading(false);
+    }
+  }, [token, currentUser, canReadRoles]);
+
+  const loadPamData = useCallback(async () => {
+    if (!token || !currentUser || !canRequestPam) return;
+
+    setPamLoading(true);
+    setPamError("");
+    try {
+      const results = await Promise.allSettled(
+        [
+          ["safes", fetchReport("/pam/safes", token)],
+          ["requests", fetchReport("/pam/requests", token)],
+          ["checkouts", fetchReport("/pam/checkouts", token)],
+        ].map(async ([key, promise]) => ({
+          key,
+          data: await promise,
+        }))
+      );
+
+      for (const result of results) {
+        if (result.status === "fulfilled") {
+          if (result.value.key === "safes") setPamSafes(Array.isArray(result.value.data) ? result.value.data : []);
+          else if (result.value.key === "requests") setPamRequests(Array.isArray(result.value.data) ? result.value.data : []);
+          else if (result.value.key === "checkouts") setPamCheckouts(Array.isArray(result.value.data) ? result.value.data : []);
+        } else {
+          const error = result.reason;
+          if (error?.status === 401) {
+            localStorage.removeItem(TOKEN_KEY);
+            setToken(null);
+            setCurrentUser(null);
+            setDashboardData(null);
+            setAuthError("Your session expired. Please sign in again.");
+            return;
+          }
+          setPamError(
+            error?.status === 403
+              ? "Your account does not have permission to view privileged access."
+              : getErrorMessage(error, "Unable to load privileged access data.")
+          );
+        }
+      }
+    } finally {
+      setPamLoading(false);
+    }
+  }, [token, currentUser, canRequestPam]);
+
+  const loadAuditTrail = useCallback(async () => {
+    if (!token || !currentUser || !canReadReports) return;
+
+    const params = new URLSearchParams();
+    if (auditFilter.event_type) params.set("event_type", auditFilter.event_type);
+    if (auditFilter.actor) params.set("actor", auditFilter.actor);
+    if (auditFilter.target) params.set("target", auditFilter.target);
+    if (auditFilter.correlation_id) params.set("correlation_id", auditFilter.correlation_id);
+    params.set("limit", "100");
+    const query = params.toString();
+
+    setAuditLoading(true);
+    setAuditError("");
+    try {
+      const data = await fetchReport(`/reports/audit-trail${query ? `?${query}` : ""}`, token);
+      setAuditTrail(data);
+    } catch (error) {
+      if (error?.status === 401) {
+        localStorage.removeItem(TOKEN_KEY);
+        setToken(null);
+        setCurrentUser(null);
+        setDashboardData(null);
+        setAuthError("Your session expired. Please sign in again.");
+        return;
+      }
+      setAuditError(
+        error?.status === 403
+          ? "Your account does not have permission to view audit events."
+          : getErrorMessage(error, "Unable to load audit events.")
+      );
+    } finally {
+      setAuditLoading(false);
+    }
+  }, [token, currentUser, canReadReports, auditFilter]);
+
+  const loadReport = useCallback(async (key) => {
+    if (!token || !currentUser || !canReadReports) return;
+
+    const endpointByKey = {
+      identities: "/reports/identity-inventory",
+      requests: "/reports/access-request-history",
+      reviews: "/reports/access-review-summary",
+      assignments: "/reports/role-access-assignments",
+      pam: "/reports/pam-activity",
+      audit: "/reports/audit-trail",
+      sod: "/reports/sod-violations",
+    };
+
+    const endpoint = endpointByKey[key];
+    if (!endpoint) return;
+
+    setReportLoading((current) => ({ ...current, [key]: true }));
+    setReportError((current) => ({ ...current, [key]: "" }));
+
+    try {
+      const data = await fetchReport(endpoint, token);
+      setReportData((current) => ({ ...current, [key]: data }));
+    } catch (error) {
+      if (error?.status === 401) {
+        localStorage.removeItem(TOKEN_KEY);
+        setToken(null);
+        setCurrentUser(null);
+        setDashboardData(null);
+        setAuthError("Your session expired. Please sign in again.");
+        return;
+      }
+      setReportError((current) => ({
+        ...current,
+        [key]: error?.status === 403
+          ? "Your account does not have permission to view this report."
+          : getErrorMessage(error, "Unable to load this report."),
+      }));
+    } finally {
+      setReportLoading((current) => ({ ...current, [key]: false }));
+    }
+  }, [token, currentUser, canReadReports]);
+
+  async function handleCreatePamRequest(event) {
+    event.preventDefault();
+    if (!canRequestPam) return;
+
+    const form = new FormData(event.currentTarget);
+    const account_id = Number(form.get("account_id"));
+    const justification = String(form.get("justification") ?? "").trim();
+    const duration_minutes = Number(form.get("duration_minutes"));
+
+    if (!account_id || !justification || !duration_minutes || duration_minutes < 1 || duration_minutes > 60) {
+      setPamError("Enter a valid account, justification, and duration (1-60 minutes).");
+      return;
+    }
+
+    setPamLoading(true);
+    setPamError("");
+    setPamSuccess("");
+    try {
+      await apiRequest("/pam/requests", token, {
+        method: "POST",
+        body: JSON.stringify({ account_id, justification, duration_minutes }),
+      });
+      setPamSuccess("Privileged access request submitted.");
+      void loadPamData();
+    } catch (error) {
+      setPamError(getErrorMessage(error, "Unable to submit the privileged access request."));
+    } finally {
+      setPamLoading(false);
+    }
+  }
+
+  async function handleDecidePamRequest(requestId) {
+    if (!canApprovePam) return;
+
+    const row = document.getElementById(`pam-decision-${requestId}`);
+    const decisionSelect = row ? row.querySelector(`[name="pam-decision-${requestId}"]`) : null;
+    const reasonInput = row ? row.querySelector(`[name="pam-reason-${requestId}"]`) : null;
+    const decision = decisionSelect ? decisionSelect.value : "";
+    const reason = reasonInput ? String(reasonInput.value ?? "").trim() : "";
+
+    if (!decision || !reason) {
+      setPamError("Decision and reason are required.");
+      return;
+    }
+
+    setPamLoading(true);
+    setPamError("");
+    setPamSuccess("");
+    try {
+      await apiRequest(`/pam/requests/${requestId}/decision`, token, {
+        method: "POST",
+        body: JSON.stringify({ decision, reason }),
+      });
+      setPamSuccess(`Request ${requestId} ${decision.toLowerCase()}.`);
+      void loadPamData();
+    } catch (error) {
+      setPamError(getErrorMessage(error, "Unable to record the decision."));
+    } finally {
+      setPamLoading(false);
+    }
+  }
+
+  async function handleCheckoutPam(requestId) {
+    if (!canCheckoutPam) return;
+
+    setPamLoading(true);
+    setPamError("");
+    setPamSuccess("");
+    try {
+      await apiRequest(`/pam/requests/${requestId}/checkout`, token, {
+        method: "POST",
+      });
+      setPamSuccess("Privileged access checked out.");
+      void loadPamData();
+    } catch (error) {
+      setPamError(getErrorMessage(error, "Unable to check out privileged access."));
+    } finally {
+      setPamLoading(false);
+    }
+  }
+
+  async function handleEndPamCheckout(checkoutId) {
+    if (!canCheckoutPam) return;
+
+    setPamLoading(true);
+    setPamError("");
+    setPamSuccess("");
+    try {
+      await apiRequest(`/pam/checkouts/${checkoutId}/end`, token, {
+        method: "POST",
+      });
+      setPamSuccess("Checkout ended.");
+      void loadPamData();
+    } catch (error) {
+      setPamError(getErrorMessage(error, "Unable to end the checkout."));
+    } finally {
+      setPamLoading(false);
+    }
+  }
+
+  async function handleRevokePamCheckout(checkoutId) {
+    if (!canRevokePam) return;
+
+    const reason = window.prompt("Enter a revocation reason:");
+    if (!reason || !reason.trim()) {
+      setPamError("A revocation reason is required.");
+      return;
+    }
+
+    setPamLoading(true);
+    setPamError("");
+    setPamSuccess("");
+    try {
+      await apiRequest(`/pam/checkouts/${checkoutId}/revoke`, token, {
+        method: "POST",
+        body: JSON.stringify({ reason: reason.trim() }),
+      });
+      setPamSuccess("Checkout revoked.");
+      void loadPamData();
+    } catch (error) {
+      setPamError(getErrorMessage(error, "Unable to revoke the checkout."));
+    } finally {
+      setPamLoading(false);
+    }
+  }
+
   async function handleCreateReview(event) {
     event.preventDefault();
     const name = newReviewName.trim();
@@ -793,6 +1173,62 @@ function App() {
 
     return () => clearTimeout(timer);
   }, [token, currentUser, activePage, loadSection]);
+
+  useEffect(() => {
+    if (!token || !currentUser || activePage !== "roles") {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      void loadRoles();
+    }, 0);
+
+    return () => clearTimeout(timer);
+  }, [token, currentUser, activePage, loadRoles]);
+
+  useEffect(() => {
+    if (!token || !currentUser || activePage !== "pam") {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      void loadPamData();
+    }, 0);
+
+    return () => clearTimeout(timer);
+  }, [token, currentUser, activePage, loadPamData]);
+
+  useEffect(() => {
+    if (!token || !currentUser || activePage !== "audit") {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      void loadAuditTrail();
+    }, 0);
+
+    return () => clearTimeout(timer);
+  }, [token, currentUser, activePage, loadAuditTrail]);
+
+  useEffect(() => {
+    if (!token || !currentUser || activePage !== "reports") {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      [
+        "identities",
+        "requests",
+        "reviews",
+        "assignments",
+        "pam",
+        "audit",
+        "sod",
+      ].forEach((key) => void loadReport(key));
+    }, 0);
+
+    return () => clearTimeout(timer);
+  }, [token, currentUser, activePage, loadReport]);
 
   useEffect(() => {
     function handleOutsideClick(event) {
@@ -1826,6 +2262,778 @@ function App() {
                 </>
               )}
             </section>
+          ) : activePage === "roles" ? (
+            <section className="panel">
+              <div className="panel-header">
+                <div>
+                  <h2>Roles & permissions</h2>
+                  <p>Authorized roles and their platform permissions</p>
+                </div>
+                <span className="development-tag">
+                  {roles.length} ROLE{roles.length === 1 ? "" : "S"}
+                </span>
+              </div>
+
+              {!canReadRoles ? (
+                <p className="empty-state" role="alert">
+                  Your account does not have permission to view roles.
+                </p>
+              ) : rolesError ? (
+                <p className="empty-state" role="alert">{rolesError}</p>
+              ) : rolesLoading && roles.length === 0 ? (
+                <p className="empty-state" role="status">Loading roles...</p>
+              ) : (
+                <>
+                  <div className="search-status">
+                    <label htmlFor="role-search">Search roles and permissions</label>
+                    <input
+                      id="role-search"
+                      type="search"
+                      placeholder="Role name, description or permission"
+                      value={search}
+                      onChange={(event) => setSearch(event.target.value)}
+                    />
+                  </div>
+
+                  <div className="activity-table">
+                    <div className="table-heading">
+                      <span>ROLE</span>
+                      <span>DESCRIPTION</span>
+                      <span>PRIVILEGED</span>
+                      <span>PERMISSIONS</span>
+                    </div>
+
+                    {roles
+                      .filter((role) =>
+                        [
+                          role.name,
+                          role.description,
+                          ...(role.permissions ?? []),
+                        ]
+                          .filter(Boolean)
+                          .join(" ")
+                          .toLowerCase()
+                          .includes(normalizedSearch)
+                      )
+                      .map((role) => (
+                        <div
+                          className="activity-row"
+                          key={`role-${role.id}`}
+                        >
+                          <div className="activity-description">
+                            <strong>{role.name}</strong>
+                            <span>{role.description || "—"}</span>
+                            <span
+                              className={`status-pill ${role.is_privileged ? "privileged" : "standard"}`}
+                            title={role.is_privileged ? "Privileged role" : "Standard role"}
+                            >
+                              {role.is_privileged ? "Privileged" : "Standard"}
+                            </span>
+                          </div>
+                          <span>
+                            {(role.permissions ?? []).join(", ") || "—"}
+                          </span>
+                        </div>
+                      ))}
+
+                    {!rolesError &&
+                      roles
+                        .filter((role) =>
+                          [
+                            role.name,
+                            role.description,
+                            ...(role.permissions ?? []),
+                          ]
+                            .filter(Boolean)
+                            .join(" ")
+                            .toLowerCase()
+                            .includes(normalizedSearch)
+                        ).length === 0 && (
+                          <p className="empty-state" role="status">
+                            {normalizedSearch
+                              ? "No roles match your search."
+                              : "No role records are available."}
+                          </p>
+                        )}
+                  </div>
+
+                  <button
+                    type="button"
+                    className="subtle-button"
+                    onClick={() => void loadRoles()}
+                    disabled={rolesLoading}
+                  >
+                    {rolesLoading ? "Refreshing..." : "Refresh"}
+                  </button>
+                </>
+              )}
+
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => navigateTo("overview")}
+              >
+                Back to overview
+              </button>
+            </section>
+          ) : activePage === "pam" ? (
+            <section className="panel">
+              <div className="panel-header">
+                <div>
+                  <h2>Privileged access</h2>
+                  <p>
+                    Simulated PAM workflow: request, approve, check out and
+                    expire time-limited privileged access. No credentials are
+                    stored.
+                  </p>
+                </div>
+                <span className="development-tag">
+                  {pamSafes.length} SAFE{pamSafes.length === 1 ? "" : "S"}
+                </span>
+              </div>
+
+              {pamError && <p className="empty-state" role="alert">{pamError}</p>}
+              {pamSuccess && (
+                <p className="review-success" role="status">{pamSuccess}</p>
+              )}
+
+              {!canRequestPam ? (
+                <p className="empty-state" role="alert">
+                  Your account does not have permission to use privileged
+                  access.
+                </p>
+              ) : pamLoading && pamSafes.length === 0 && pamRequests.length === 0 && pamCheckouts.length === 0 ? (
+                <p className="empty-state" role="status">
+                  Loading privileged access data...
+                </p>
+              ) : (
+                <>
+                  {canRequestPam && (
+                    <form
+                      className="review-create-form"
+                      onSubmit={handleCreatePamRequest}
+                    >
+                      <label htmlFor="pam-account">Request privileged access</label>
+                      <div className="review-create-controls">
+                        <select
+                          id="pam-account"
+                          name="account_id"
+                          disabled={pamLoading}
+                        >
+                          <option value="">Select an account</option>
+                          {pamSafes.flatMap((safe) =>
+                            safe.accounts.map((account) => (
+                              <option
+                                key={account.id}
+                                value={account.id}
+                              >
+                                {account.name} · {account.system_name} ({safe.name})
+                              </option>
+                            ))
+                          )}
+                        </select>
+                        <input
+                          id="pam-justification"
+                          name="justification"
+                          maxLength={500}
+                          placeholder="Justification"
+                          disabled={pamLoading}
+                        />
+                        <input
+                          id="pam-duration"
+                          name="duration_minutes"
+                          type="number"
+                          min="1"
+                          max="60"
+                          value=""
+                          placeholder="Duration (minutes)"
+                          disabled={pamLoading}
+                        />
+                        <button
+                          className="primary-button"
+                          type="submit"
+                          disabled={
+                            pamLoading ||
+                            !document.getElementById("pam-account")?.value
+                          }
+                        >
+                          {pamLoading ? "Requesting..." : "Request access"}
+                        </button>
+                      </div>
+                    </form>
+                  )}
+
+                  <div className="pam-section">
+                    <h3>Available safes and accounts</h3>
+                    <div className="activity-table">
+                      <div className="table-heading">
+                        <span>SAFE</span><span>ACCOUNT</span><span>SYSTEM</span><span>TYPE</span><span>STATUS</span>
+                      </div>
+                      {pamSafes.flatMap((safe) =>
+                        safe.accounts.map((account) => (
+                          <div
+                            className="activity-row"
+                            key={`pam-account-${account.id}`}
+                          >
+                            <div className="activity-description">
+                              <strong>{safe.name}</strong>
+                              <span>{account.name}</span>
+                              <small>{safe.description || "Demo safe"}</small>
+                            </div>
+                            <span>{account.system_name}</span>
+                            <span>{account.account_type}</span>
+                            <span
+                              className={`status-pill ${String(account.status).toLowerCase()}`}
+                            >
+                              {account.status}
+                            </span>
+                          </div>
+                        ))
+                      )}
+                      {pamSafes.length === 0 && (
+                        <p className="empty-state" role="status">
+                          No PAM safes are available.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="pam-section">
+                    <h3>Privileged access requests</h3>
+                    <div className="activity-table">
+                      <div className="table-heading">
+                        <span>REQUEST</span><span>ACCOUNT</span><span>REQUESTER</span><span>STATUS</span><span>REQUESTED</span>
+                      </div>
+                      {pamRequests
+                        .filter((request) =>
+                          [
+                            request.account_name,
+                            request.system_name,
+                            request.safe_name,
+                            request.requester_username,
+                            request.status,
+                            request.justification,
+                          ]
+                            .filter(Boolean)
+                            .join(" ")
+                            .toLowerCase()
+                            .includes(normalizedSearch)
+                        )
+                        .map((request) => {
+                          const decided = request.status !== "REQUESTED";
+                          return (
+                            <div
+                              className="activity-row"
+                              key={`pam-request-${request.id}`}
+                            >
+                              <div className="activity-description">
+                                <strong>Request #{request.id}</strong>
+                                <span>
+                                  {request.account_name} ·
+                                  {request.system_name}
+                                </span>
+                                <small>{request.requester_username}</small>
+                                {request.decision_reason && (
+                                  <small>Reason: {request.decision_reason}</small>
+                                )}
+                              </div>
+                              <span
+                                className={`status-pill ${String(request.status).toLowerCase()}`}
+                              >
+                                {request.status}
+                              </span>
+                              <div>
+                                {canApprovePam && request.status === "REQUESTED" && (
+                                  <>
+                                    <select
+                                      id={`pam-decision-${request.id}`}
+                                      name={`pam-decision-${request.id}`}
+                                      defaultValue=""
+                                      disabled={pamLoading}
+                                    >
+                                      <option value="">Decide</option>
+                                      <option value="APPROVED">Approve</option>
+                                      <option value="REJECTED">Reject</option>
+                                    </select>
+                                    <input
+                                      id={`pam-reason-${request.id}`}
+                                      name={`pam-reason-${request.id}`}
+                                      placeholder="Reason (required)"
+                                      maxLength={500}
+                                      disabled={pamLoading || decided}
+                                    />
+                                    <button
+                                      type="button"
+                                      className="subtle-button"
+                                      onClick={() => void handleDecidePamRequest(request.id)}
+                                      disabled={
+                                        pamLoading ||
+                                        decided ||
+                                        !reasonInputFilled(request.id)
+                                      }
+                                    >
+                                      {pamLoading ? "Processing..." : "Record decision"}
+                                    </button>
+                                  </>
+                                )}
+                                {decided && request.status === "APPROVED" && !request.checkout_id && canCheckoutPam && (
+                                  <button
+                                    type="button"
+                                    className="subtle-button"
+                                    onClick={() => void handleCheckoutPam(request.id)}
+                                    disabled={pamLoading}
+                                  >
+                                    {pamLoading ? "Checking out..." : "Checkout"}
+                                  </button>
+                                )}
+                                {!decided && (
+                                  <span className="status-pill">pending</span>
+                                )}
+                              </div>
+                              <time>{formatDateTime(request.requested_at)}</time>
+                            </div>
+                          );
+                        })}
+                      {pamRequests.length === 0 && (
+                        <p className="empty-state" role="status">
+                          No privileged access requests.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="pam-section">
+                    <h3>Checkouts</h3>
+                    <div className="activity-table">
+                      <div className="table-heading">
+                        <span>CHECKOUT</span><span>REQUEST</span><span>HELD BY</span><span>EXPIRES</span><span>STATUS</span>
+                      </div>
+                      {pamCheckouts
+                        .filter((checkout) =>
+                          [
+                            checkout.account_name,
+                            checkout.system_name,
+                            checkout.safe_name,
+                            checkout.requester_username,
+                            checkout.checked_out_by,
+                            checkout.status,
+                          ]
+                            .filter(Boolean)
+                            .join(" ")
+                            .toLowerCase()
+                            .includes(normalizedSearch)
+                        )
+                        .map((checkout) => (
+                          <div
+                            className="activity-row"
+                            key={`pam-checkout-${checkout.id}`}
+                          >
+                            <div className="activity-description">
+                              <strong>Checkout #{checkout.id}</strong>
+                              <span>
+                                {checkout.account_name} ·
+                                {checkout.system_name}
+                              </span>
+                              <small>{checkout.checked_out_by}</small>
+                            </div>
+                            <span>{checkout.expires_at ? formatDateTime(checkout.expires_at) : "—"}</span>
+                            <span
+                              className={`status-pill ${String(checkout.status).toLowerCase()}`}
+                            >
+                              {checkout.status}
+                            </span>
+                            <div>
+                              {checkout.status === "ACTIVE" && canCheckoutPam && (
+                                <button
+                                  type="button"
+                                  className="subtle-button"
+                                  onClick={() => void handleEndPamCheckout(checkout.id)}
+                                  disabled={pamLoading}
+                                >
+                                  {pamLoading ? "Ending..." : "End checkout"}
+                                </button>
+                              )}
+                              {checkout.status === "ACTIVE" && canRevokePam && (
+                                <button
+                                  type="button"
+                                  className="subtle-button"
+                                  onClick={() => void handleRevokePamCheckout(checkout.id)}
+                                  disabled={pamLoading}
+                                >
+                                  {pamLoading ? "Revoking..." : "Revoke checkout"}
+                                </button>
+                              )}
+                              {(checkout.status === "EXPIRED" || checkout.status === "REVOKED" || checkout.status === "ENDED") && (
+                                <span className="status-pill">completed</span>
+                              )}
+                            </div>
+                            <time>{formatDateTime(checkout.checked_out_at)}</time>
+                          </div>
+                        ))}
+                      {pamCheckouts.length === 0 && (
+                        <p className="empty-state" role="status">
+                          No privileged access checkouts.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="subtle-button"
+                    onClick={() => void loadPamData()}
+                    disabled={pamLoading}
+                  >
+                    {pamLoading ? "Refreshing..." : "Refresh"}
+                  </button>
+                </>
+              )}
+
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => navigateTo("overview")}
+              >
+                Back to overview
+              </button>
+            </section>
+          ) : activePage === "audit" ? (
+            <section className="panel">
+              <div className="panel-header">
+                <div>
+                  <h2>Audit trail</h2>
+                  <p>Audit events and chain integrity</p>
+                </div>
+                <span className="development-tag">
+                  {auditTrail?.items?.length ?? 0} EVENT{auditTrail?.items?.length === 1 ? "" : "S"}
+                </span>
+              </div>
+
+              {auditError && <p className="empty-state" role="alert">{auditError}</p>}
+              {!canReadReports ? (
+                <p className="empty-state" role="alert">
+                  Your account does not have permission to view audit events.
+                </p>
+              ) : auditLoading && (!auditTrail || auditTrail.items.length === 0) ? (
+                <p className="empty-state" role="status">Loading audit events...</p>
+              ) : (
+                <>
+                  <div className="panel-header">
+                    <div>
+                      <h3>Integrity</h3>
+                      <p>
+                        Audit chain verified across recorded events.
+                      </p>
+                    </div>
+                    <div>
+                      <span
+                        className={`status-pill ${
+                          auditTrail?.integrity.ok ? "success" : "denied"
+                        }`}
+                      >
+                        {auditTrail?.integrity.ok ? "Integrity valid" : "Integrity invalid"}
+                      </span>{" "}
+                      <span>
+                        {auditTrail?.integrity.checked ?? 0} events checked
+                      </span>
+                      {auditTrail?.integrity.first_bad_id != null && (
+                        <span>
+                          First invalid event:{" "}
+                          <strong>#{auditTrail.integrity.first_bad_id}</strong>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="search-status">
+                    <label htmlFor="audit-event-type">Event type</label>
+                    <input
+                      id="audit-event-type"
+                      value={auditFilter.event_type}
+                      onChange={(event) =>
+                        setAuditFilter((current) => ({
+                          ...current,
+                          event_type: event.target.value,
+                        }))
+                      }
+                      placeholder="e.g. LOGIN_SUCCEEDED"
+                    />
+                    <label htmlFor="audit-actor">Actor</label>
+                    <input
+                      id="audit-actor"
+                      value={auditFilter.actor}
+                      onChange={(event) =>
+                        setAuditFilter((current) => ({
+                          ...current,
+                          actor: event.target.value,
+                        }))
+                      }
+                      placeholder="e.g. identityguard.admin"
+                    />
+                    <label htmlFor="audit-target">Target</label>
+                    <input
+                      id="audit-target"
+                      value={auditFilter.target}
+                      onChange={(event) =>
+                        setAuditFilter((current) => ({
+                          ...current,
+                          target: event.target.value,
+                        }))
+                      }
+                      placeholder="e.g. user:identityguard.admin"
+                    />
+                    <label htmlFor="audit-correlation">Correlation ID</label>
+                    <input
+                      id="audit-correlation"
+                      value={auditFilter.correlation_id}
+                      onChange={(event) =>
+                        setAuditFilter((current) => ({
+                          ...current,
+                          correlation_id: event.target.value,
+                        }))
+                      }
+                      placeholder="Correlation ID"
+                    />
+                    <button
+                      type="button"
+                      className="subtle-button"
+                      onClick={() => void loadAuditTrail()}
+                      disabled={auditLoading}
+                    >
+                      {auditLoading ? "Searching..." : "Search"}
+                    </button>
+                    <button
+                      type="button"
+                      className="subtle-button"
+                      onClick={() => {
+                        setAuditFilter({ event_type: "", actor: "", target: "", correlation_id: "" });
+                        void loadAuditTrail();
+                      }}
+                    >
+                      Clear filters
+                    </button>
+                  </div>
+
+                  <div className="activity-table">
+                    <div className="table-heading">
+                      <span>EVENT</span><span>ACTOR</span><span>TYPE</span><span>ACTION</span><span>RESULT</span><span>TIME</span>
+                    </div>
+                    {auditLoading && (
+                      <p className="empty-state" role="status">
+                        Loading audit events...
+                      </p>
+                    )}
+                    {!auditLoading &&
+                      (auditTrail?.items ?? []).map((event) => (
+                        <div
+                          className="activity-row"
+                          key={`audit-${event.event_id ?? event.id}`}
+                        >
+                          <div className="activity-description">
+                            <strong>{event.actor}</strong>
+                            <span>{event.action || event.event_type}</span>
+                            <small>{event.target}</small>
+                            {event.reason && <small>Reason: {event.reason}</small>}
+                          </div>
+                          <span>{event.event_type}</span>
+                          <span
+                            className={`status-pill ${getAuditStatus(event).toLowerCase()}`}
+                          >
+                            {getAuditStatus(event)}
+                          </span>
+                          <time>{formatDateTime(event.timestamp)}</time>
+                        </div>
+                      ))}
+                    {!auditLoading &&
+                      (auditTrail?.items ?? []).length === 0 && (
+                        <p className="empty-state" role="status">
+                          {normalizedSearch || Object.values(auditFilter).some(Boolean)
+                            ? "No audit events match your filters."
+                            : "No audit events have been recorded yet."}
+                        </p>
+                      )}
+                  </div>
+
+                  <div>
+                    <strong>Summary</strong>
+                    <span>
+                      {auditTrail?.total_count ?? 0} total events ·
+                      {auditTrail?.success_count ?? 0} successful ·
+                      {auditTrail?.denied_count ?? 0} denied ·
+                      {auditTrail?.failure_count ?? 0} failed
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="subtle-button"
+                    onClick={() => void loadAuditTrail()}
+                    disabled={auditLoading}
+                  >
+                    {auditLoading ? "Refreshing..." : "Refresh"}
+                  </button>
+                </>
+              )}
+
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => navigateTo("overview")}
+              >
+                Back to overview
+              </button>
+            </section>
+          ) : activePage === "reports" ? (
+            <section className="panel">
+              <div className="panel-header">
+                <div>
+                  <h2>Reports</h2>
+                  <p>Governance reports from IdentityGuard</p>
+                </div>
+                <span className="development-tag">REPORTS</span>
+              </div>
+
+              {!canReadReports ? (
+                <p className="empty-state" role="alert">
+                  Your account does not have permission to view reports.
+                </p>
+              ) : (
+                <>
+                  <div className="search-status">
+                    <label htmlFor="report-search">Search reports</label>
+                    <input
+                      id="report-search"
+                      type="search"
+                      placeholder="Report name"
+                      value={search}
+                      onChange={(event) => setSearch(event.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="subtle-button"
+                      onClick={() => setSearch("")}
+                    >
+                      Clear search
+                    </button>
+                  </div>
+
+                  <div className="content-grid">
+                    {reportCategories
+                      .flatMap((category) =>
+                        category.reports.map((report) => ({
+                          ...report,
+                          category: category.heading,
+                        }))
+                      )
+                      .filter((report) =>
+                        report.label.toLowerCase().includes(normalizedSearch)
+                      )
+                      .map((report) => {
+                        const data = reportData[report.key];
+                        const loading = reportLoading[report.key];
+                        const error = reportError[report.key];
+                        return (
+                          <article
+                            className="panel report-card"
+                            key={report.key}
+                          >
+                            <div className="panel-header">
+                              <div>
+                                <h3>{report.label}</h3>
+                                <p>{report.category}</p>
+                              </div>
+                              <span className="round-arrow">↗</span>
+                            </div>
+
+                            {error && (
+                              <p className="empty-state" role="alert">
+                                {error}
+                              </p>
+                            )}
+
+                            {loading ? (
+                              <p className="empty-state" role="status">
+                                Loading {report.label}...
+                              </p>
+                            ) : data ? (
+                              <div>
+                                {data.total_count != null && (
+                                  <div>
+                                    <strong>Total:</strong>{" "}
+                                    {data.total_count}
+                                  </div>
+                                )}
+                                {data.integrity && (
+                                  <div>
+                                    <strong>Integrity:</strong>{" "}
+                                    {data.integrity.ok ? "Valid" : "Invalid"}
+                                    ({data.integrity.checked} checked)
+                                  </div>
+                                )}
+                                {data.items && data.items.length > 0 ? (
+                                  <div className="activity-table" style={{ marginTop: 8 }}>
+                                    <div className="table-heading">
+                                      {reportTableColumns(report.key).map(
+                                        (col) => (
+                                          <span key={col}>{col}</span>
+                                        )
+                                      )}
+                                    </div>
+                                    {data.items
+                                      .slice(0, 12)
+                                      .map((item, index) => (
+                                        <div
+                                          className="activity-row"
+                                          key={`report-${report.key}-${item.id ?? item.event_id ?? index}`}
+                                        >
+                                          {reportTableCells(report.key, item).map(
+                                            (cell, cellIndex) => (
+                                              <span key={cellIndex}>{cell}</span>
+                                            )
+                                          )}
+                                        </div>
+                                      ))}
+                                    {data.items.length > 12 && (
+                                      <p className="empty-state" role="status">
+                                        Showing 12 of {data.items.length} items.
+                                      </p>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <p className="empty-state" role="status">
+                                    No {report.label.toLowerCase()} data available.
+                                  </p>
+                                )}
+                              </div>
+                            ) : (
+                              <p className="empty-state" role="status">
+                                Select a report to load its data.
+                              </p>
+                            )}
+
+                            <button
+                              type="button"
+                              className="subtle-button"
+                              onClick={() => void loadReport(report.key)}
+                              disabled={loading}
+                            >
+                              {loading ? "Loading..." : "Refresh"}
+                            </button>
+                          </article>
+                        );
+                      })}
+                  </div>
+
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => navigateTo("overview")}
+                  >
+                    Back to overview
+                  </button>
+                </>
+              )}
+            </section>
           ) : (
             <section className="panel placeholder-panel">
               <div className="placeholder-icon">◇</div>
@@ -1835,34 +3043,6 @@ function App() {
                 {sectionDescription ||
                   "This section is ready for integration with the IdentityGuard API."}
               </p>
-
-              {activePage === "reports" && !canReadReports ? (
-                <p role="status">
-                  Your account does not have permission to view reports.
-                </p>
-              ) : normalizedSearch ? (
-                <div className="search-status" role="status">
-                  <strong>Search is ready for this section</strong>
-                  <p>
-                    Search term: <span>{search.trim()}</span>
-                  </p>
-                  <p>
-                    Results will appear when this section's records are
-                    connected. No records have been searched yet.
-                  </p>
-                  <button
-                    type="button"
-                    className="subtle-button"
-                    onClick={() => setSearch("")}
-                  >
-                    Clear search
-                  </button>
-                </div>
-              ) : (
-                <span className="development-tag">
-                  FRONTEND FOUNDATION
-                </span>
-              )}
 
               <button
                 type="button"
